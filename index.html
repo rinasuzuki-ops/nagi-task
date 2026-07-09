@@ -1,0 +1,1187 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>凪タスク帳</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+:root{
+  --ink:#1C2B4A; --ink-soft:#33456B; --accent:#D8402B; --amber:#DE9A18;
+  --gray:#8A93A3; --bg:#F2F4F7; --line:#E3E7EE;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{height:100%;}
+body{
+  font-family:"Hiragino Kaku Gothic ProN","Hiragino Sans","Yu Gothic UI","Noto Sans JP",sans-serif;
+  background:var(--bg); color:#222B3A; -webkit-font-smoothing:antialiased;
+}
+button{font:inherit;border:none;background:none;cursor:pointer;}
+input,select,textarea{font:inherit;color:inherit;}
+.container{max-width:760px;margin:0 auto;padding:0 16px;}
+.app-header{background:var(--ink);color:#fff;}
+.header-inner{display:flex;align-items:center;justify-content:space-between;padding:12px 0;}
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px;box-shadow:0 1px 2px rgba(20,28,48,.05);}
+.btn{border-radius:8px;padding:8px 16px;font-size:13px;font-weight:700;}
+.btn:active{opacity:.8;}
+.btn-ink{background:var(--ink);color:#fff;}
+.btn-accent{background:var(--accent);color:#fff;}
+.btn-ghost{background:var(--bg);color:var(--ink-soft);border:1px solid var(--line);}
+.btn-sm{padding:5px 12px;font-size:11px;border-radius:8px;}
+.btn:disabled{background:var(--gray);color:#fff;cursor:default;}
+.btn-block{display:block;width:100%;}
+.input,.select,.textarea{
+  background:var(--bg);border:1px solid var(--line);border-radius:8px;
+  padding:8px 12px;font-size:13px;outline:none;width:100%;
+}
+.textarea{resize:none;line-height:1.6;}
+.label{display:block;font-size:11px;font-weight:700;color:var(--ink-soft);margin-bottom:4px;}
+.chip{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;font-weight:500;}
+.muted{color:var(--gray);}
+.small{font-size:11px;}
+.xs{font-size:12px;}
+.bold{font-weight:700;}
+.mt1{margin-top:4px;}.mt2{margin-top:8px;}.mt3{margin-top:12px;}.mt4{margin-top:16px;}
+.mb1{margin-bottom:4px;}.mb2{margin-bottom:8px;}.mb3{margin-bottom:12px;}.mb4{margin-bottom:16px;}
+.row{display:flex;gap:8px;align-items:center;}
+.row-start{display:flex;gap:8px;align-items:flex-start;}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;}
+.wrap{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
+.flex1{flex:1;min-width:0;}
+.center{text-align:center;}
+.stack>*+*{margin-top:8px;}
+.nav{position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1px solid var(--line);z-index:40;padding-bottom:env(safe-area-inset-bottom);}
+.nav-inner{max-width:760px;margin:0 auto;display:flex;}
+.nav-btn{flex:1;padding:8px 0 6px;display:flex;flex-direction:column;align-items:center;gap:2px;font-size:11px;color:var(--gray);border-top:2px solid transparent;}
+.nav-btn.active{color:var(--ink);font-weight:700;border-top-color:var(--ink);}
+.nav-icon{font-size:18px;line-height:1;}
+.modal-bg{position:fixed;inset:0;background:rgba(20,28,48,.45);z-index:50;display:flex;align-items:flex-end;justify-content:center;}
+.modal{background:#fff;width:100%;max-width:440px;border-radius:16px 16px 0 0;padding:16px;max-height:92vh;overflow-y:auto;}
+@media(min-width:640px){
+  .modal-bg{align-items:center;}
+  .modal{border-radius:16px;}
+}
+.task-card{background:#fff;border:1px solid var(--line);border-radius:12px;display:flex;align-items:stretch;overflow:hidden;box-shadow:0 1px 2px rgba(20,28,48,.05);}
+.imp-bar{width:4px;flex-shrink:0;}
+.check-btn{padding:0 8px 0 12px;display:flex;align-items:center;flex-shrink:0;}
+.check-circle{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;border:2px solid var(--line);background:#fff;color:#fff;}
+.check-circle.done{border-color:var(--ink);background:var(--ink);}
+.progress-track{height:6px;border-radius:999px;background:var(--bg);overflow:hidden;}
+.progress-fill{height:100%;background:var(--ink);}
+.banner{background:#FCF0D8;border:1px solid #EFDDB0;color:#7A5C10;border-radius:10px;padding:8px 12px;font-size:12px;}
+.tl-row{display:flex;align-items:center;gap:8px;border-radius:8px;padding:6px 8px;background:var(--bg);}
+.tl-row.is-task{background:#FBF0EE;}
+.tl-time{width:84px;flex-shrink:0;text-align:right;font-size:11px;font-weight:700;color:var(--ink-soft);}
+.tl-row.is-task .tl-time{color:var(--accent);}
+.filters{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;}
+.filters .select{width:auto;font-size:11px;padding:6px 8px;background:#fff;flex-shrink:0;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef } = React;
+
+const IMP_COLOR = { "高": "var(--accent)", "中": "var(--amber)", "低": "var(--gray)" };
+const TAG_COLORS = ["#3B5BA5","#2E8B6F","#B25AA2","#C97B2D","#5A7D9A","#8A5AB2","#4A8FB5","#A5663B"];
+const STORAGE_KEY = "nagi-tasks:data";
+
+const DEFAULT_GUIDE = "【高】遅れると実害が出る・期限厳守\n ビザ/労務/給与/経営層への報告・稟議など\n\n【中】通常業務。期限はあるが1〜2日なら調整可\n 定例資料、店舗への連絡、面接調整など\n\n【低】改善・アイデア系。遅れても致命傷なし\n ツール改善、いつか読む資料など\n\n▼迷ったら「遅れたら誰が困る?」\n 会社・法令・経営層 → 高\n 現場・社外の相手 → 中\n 自分だけ → 低";
+
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const todayStr = () => {
+  const d = new Date();
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+};
+const fmtDate = (s) => {
+  if (!s) return "";
+  const p = s.split("-");
+  return Number(p[1]) + "/" + Number(p[2]);
+};
+const daysUntil = (s) => {
+  if (!s) return null;
+  return Math.round((new Date(s) - new Date(todayStr())) / 86400000);
+};
+const dateToStr = (d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+const nextDue = (base, repeat) => {
+  const d = new Date(base + "T00:00:00");
+  if (repeat === "毎日") d.setDate(d.getDate() + 1);
+  else if (repeat === "毎週") d.setDate(d.getDate() + 7);
+  else if (repeat === "毎月") d.setMonth(d.getMonth() + 1);
+  return dateToStr(d);
+};
+const dueInfo = (due, status) => {
+  if (!due) return { label: "期限なし", bg: "#EEF0F4", fg: "var(--gray)" };
+  const n = daysUntil(due);
+  if (status === "done") return { label: fmtDate(due), bg: "#EEF0F4", fg: "var(--gray)" };
+  if (n < 0) return { label: fmtDate(due) + " 期限切れ", bg: "#FBE3DF", fg: "var(--accent)" };
+  if (n === 0) return { label: "今日まで", bg: "#FBE3DF", fg: "var(--accent)" };
+  if (n === 1) return { label: "明日まで", bg: "#FCF0D8", fg: "#A66E00" };
+  if (n <= 3) return { label: fmtDate(due) + " あと" + n + "日", bg: "#FCF0D8", fg: "#A66E00" };
+  return { label: fmtDate(due), bg: "#EEF0F4", fg: "#5A6577" };
+};
+const tagColor = (name, allTags) => TAG_COLORS[Math.max(0, allTags.indexOf(name)) % TAG_COLORS.length];
+
+// ===== ローカル保存(この端末のブラウザ内) =====
+const store = {
+  ok: (function () { try { localStorage.setItem("__nagi_t", "1"); localStorage.removeItem("__nagi_t"); return true; } catch (e) { return false; } })(),
+  load: function () { try { const v = localStorage.getItem(STORAGE_KEY); return v ? JSON.parse(v) : null; } catch (e) { return null; } },
+  save: function (d) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); return true; } catch (e) { return false; } },
+};
+
+// ===== クラウド同期(Googleスプレッドシート / GAS) =====
+const CLOUD_KEY = "nagi-tasks:cloud";
+const cloud = {
+  load: function () { try { const v = localStorage.getItem(CLOUD_KEY); return v ? JSON.parse(v) : { url: "", token: "" }; } catch (e) { return { url: "", token: "" }; } },
+  save: function (c) { try { localStorage.setItem(CLOUD_KEY, JSON.stringify(c)); } catch (e) { } },
+};
+function cloudGet(cfg) {
+  return fetch(cfg.url + "?token=" + encodeURIComponent(cfg.token)).then(function (r) { return r.json(); });
+}
+function cloudPost(cfg, data) {
+  return fetch(cfg.url, { method: "POST", body: JSON.stringify({ token: cfg.token, data: data }) }).then(function (r) { return r.json(); });
+}
+
+// ===== ファイル出力/読み込み =====
+function download(filename, content, mime) {
+  const blob = new Blob([content], { type: mime });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+}
+function csvEscape(v) {
+  v = v == null ? "" : String(v);
+  if (/[",\n\r]/.test(v)) v = '"' + v.replace(/"/g, '""') + '"';
+  return v;
+}
+const CSV_HEAD = ["タスク名","状態","期限","重要度","担当者","依頼元","タグ","繰り返し","実行予定日","開始","終了","メモ","作成日","完了日"];
+function tasksToCsv(tasks) {
+  const rows = tasks.map(function (t) {
+    return [
+      t.title, t.status === "done" ? "完了" : "未完了", t.due || "", t.importance || "",
+      t.assignee || "", t.requester || "", (t.tags || []).join(";"), t.repeat || "",
+      t.planned ? t.planned.date : "", t.planned ? t.planned.start : "", t.planned ? t.planned.end : "",
+      t.note || "", t.createdAt || "", t.doneAt || "",
+    ];
+  });
+  return "\uFEFF" + [CSV_HEAD].concat(rows).map(function (r) { return r.map(csvEscape).join(","); }).join("\r\n");
+}
+function parseCsv(text) {
+  text = text.replace(/^\uFEFF/, "");
+  const rows = []; let field = "", row = [], inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQ) {
+      if (ch === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else inQ = false; }
+      else field += ch;
+    } else {
+      if (ch === '"') inQ = true;
+      else if (ch === ",") { row.push(field); field = ""; }
+      else if (ch === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
+      else if (ch === "\r") { /* skip */ }
+      else field += ch;
+    }
+  }
+  if (field !== "" || row.length) { row.push(field); rows.push(row); }
+  return rows.filter(function (r) { return r.some(function (c) { return c.trim() !== ""; }); });
+}
+function csvToTasks(text) {
+  const rows = parseCsv(text);
+  if (rows.length < 2) return [];
+  const head = rows[0];
+  const idx = function (name) { return head.indexOf(name); };
+  const iTitle = idx("タスク名");
+  if (iTitle === -1) return null; // ヘッダー不一致
+  const get = function (r, name) { const i = idx(name); return i === -1 ? "" : (r[i] || "").trim(); };
+  return rows.slice(1).map(function (r) {
+    const title = (r[iTitle] || "").trim();
+    if (!title) return null;
+    const pd = get(r, "実行予定日"), ps = get(r, "開始"), pe = get(r, "終了");
+    return {
+      id: uid(), title: title,
+      status: get(r, "状態") === "完了" ? "done" : "open",
+      due: get(r, "期限"),
+      importance: ["高","中","低"].indexOf(get(r, "重要度")) >= 0 ? get(r, "重要度") : "中",
+      assignee: get(r, "担当者") || "自分",
+      requester: get(r, "依頼元"),
+      tags: get(r, "タグ") ? get(r, "タグ").split(";").map(function (s) { return s.trim(); }).filter(Boolean) : [],
+      repeat: ["毎日","毎週","毎月"].indexOf(get(r, "繰り返し")) >= 0 ? get(r, "繰り返し") : "",
+      planned: pd && ps ? { date: pd, start: ps, end: pe } : null,
+      note: get(r, "メモ"),
+      createdAt: get(r, "作成日") || todayStr(),
+      doneAt: get(r, "完了日") || null,
+      source: "import",
+    };
+  }).filter(Boolean);
+}
+
+const emptyData = { memos: [], tasks: [], members: [], meetings: [], tags: [], impGuide: DEFAULT_GUIDE };
+
+// ============ アプリ本体 ============
+function App() {
+  const [data, setData] = useState(function () {
+    const saved = store.load();
+    return saved ? Object.assign({}, emptyData, saved) : emptyData;
+  });
+  const [tab, setTab] = useState("today");
+  const [editTask, setEditTask] = useState(null);
+  const [scheduleTask, setScheduleTask] = useState(null);
+  const [showData, setShowData] = useState(false);
+  const [toast, setToast] = useState("");
+  const [cloudCfg, setCloudCfg] = useState(cloud.load());
+  const [sync, setSync] = useState(cloud.load().url ? "loading" : "off");
+  const saveTimer = useRef(null);
+
+  const mergeRemote = function (remote) {
+    const m = Object.assign({}, emptyData, remote);
+    if (!m.impGuide) m.impGuide = DEFAULT_GUIDE;
+    return m;
+  };
+
+  useEffect(function () {
+    if (!cloudCfg.url) return;
+    cloudGet(cloudCfg).then(function (remote) {
+      if (remote && Array.isArray(remote.tasks)) {
+        const merged = mergeRemote(remote);
+        setData(merged);
+        if (store.ok) store.save(merged);
+        setSync("ok");
+      } else setSync("error");
+    }).catch(function () { setSync("error"); });
+  }, []);
+
+  const update = function (next) {
+    setData(next);
+    if (store.ok) store.save(next);
+    if (cloudCfg.url) {
+      setSync("saving");
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(function () {
+        cloudPost(cloudCfg, next).then(function (res) {
+          setSync(res && res.ok ? "ok" : "error");
+        }).catch(function () { setSync("error"); });
+      }, 1200);
+    }
+  };
+  const showToast = function (msg) {
+    setToast(msg);
+    setTimeout(function () { setToast(""); }, 2400);
+  };
+
+  const saveTask = function (task, newTags) {
+    newTags = newTags || [];
+    const exists = data.tasks.some(function (t) { return t.id === task.id; });
+    const tasks = exists ? data.tasks.map(function (t) { return t.id === task.id ? task : t; }) : data.tasks.concat([task]);
+    const memos = task.fromMemoId ? data.memos.filter(function (m) { return m.id !== task.fromMemoId; }) : data.memos;
+    const tags = data.tags.slice();
+    newTags.forEach(function (n) { if (tags.indexOf(n) === -1) tags.push(n); });
+    update(Object.assign({}, data, { tasks: tasks, memos: memos, tags: tags }));
+    setEditTask(null);
+    showToast(exists ? "タスクを更新しました" : "タスクを追加しました");
+  };
+  const saveGuide = function (text) { update(Object.assign({}, data, { impGuide: text })); };
+  const toggleDone = function (id) {
+    const target = data.tasks.find(function (t) { return t.id === id; });
+    if (!target) return;
+    let tasks = data.tasks.map(function (t) {
+      return t.id === id
+        ? Object.assign({}, t, { status: t.status === "done" ? "open" : "done", doneAt: t.status === "done" ? null : todayStr() })
+        : t;
+    });
+    if (target.status !== "done" && target.repeat) {
+      const base = target.due || todayStr();
+      tasks = tasks.concat([Object.assign({}, target, { id: uid(), status: "open", doneAt: null, planned: null, due: nextDue(base, target.repeat), createdAt: todayStr() })]);
+      showToast("完了!次回(" + target.repeat + ")分を作成しました");
+    }
+    update(Object.assign({}, data, { tasks: tasks }));
+  };
+  const deleteTask = function (id) {
+    update(Object.assign({}, data, { tasks: data.tasks.filter(function (t) { return t.id !== id; }) }));
+    setEditTask(null);
+    showToast("タスクを削除しました");
+  };
+  const setPlanned = function (taskId, planned) {
+    update(Object.assign({}, data, { tasks: data.tasks.map(function (t) { return t.id === taskId ? Object.assign({}, t, { planned: planned }) : t; }) }));
+  };
+
+  const connectCloud = function (cfg) {
+    setSync("loading");
+    showToast("接続しています…");
+    cloudGet(cfg).then(function (remote) {
+      if (!remote || !Array.isArray(remote.tasks)) {
+        setSync("error");
+        window.alert("応答が不正です。合言葉(TOKEN)が一致しているか、GASコードの貼り付け・デプロイ設定を確認してください。");
+        return;
+      }
+      cloud.save(cfg);
+      setCloudCfg(cfg);
+      const remoteHas = remote.tasks.length > 0 || (remote.memos || []).length > 0;
+      const localHas = data.tasks.length > 0 || data.memos.length > 0;
+      if (!remoteHas && localHas) {
+        cloudPost(cfg, data).then(function () { setSync("ok"); showToast("この端末のデータをシートに書き込みました"); }).catch(function () { setSync("error"); });
+      } else if (remoteHas && localHas) {
+        if (window.confirm("スプレッドシート側に既にデータがあります。\nOK: シートのデータをこの端末に読み込む(推奨)\nキャンセル: この端末のデータでシートを上書き")) {
+          const merged = mergeRemote(remote);
+          setData(merged); if (store.ok) store.save(merged);
+          setSync("ok"); showToast("シートのデータを読み込みました");
+        } else {
+          cloudPost(cfg, data).then(function () { setSync("ok"); showToast("この端末のデータで上書きしました"); }).catch(function () { setSync("error"); });
+        }
+      } else {
+        const merged = mergeRemote(remote);
+        setData(merged); if (store.ok) store.save(merged);
+        setSync("ok"); showToast("接続しました");
+      }
+    }).catch(function () {
+      setSync("error");
+      window.alert("接続に失敗しました。URL・合言葉と、デプロイの「アクセスできるユーザー: 全員」設定を確認してください。");
+    });
+  };
+  const pullCloud = function () {
+    if (!cloudCfg.url) return;
+    setSync("loading");
+    cloudGet(cloudCfg).then(function (remote) {
+      if (remote && Array.isArray(remote.tasks)) {
+        const merged = mergeRemote(remote);
+        setData(merged); if (store.ok) store.save(merged);
+        setSync("ok"); showToast("スプレッドシートから読み込みました");
+      } else { setSync("error"); showToast("読み込みに失敗しました"); }
+    }).catch(function () { setSync("error"); showToast("読み込みに失敗しました"); });
+  };
+  const pushNow = function () {
+    if (!cloudCfg.url) return;
+    setSync("saving");
+    cloudPost(cloudCfg, data).then(function (res) {
+      setSync(res && res.ok ? "ok" : "error");
+      showToast(res && res.ok ? "スプレッドシートに書き込みました" : "書き込みに失敗しました");
+    }).catch(function () { setSync("error"); showToast("書き込みに失敗しました"); });
+  };
+  const disconnectCloud = function () {
+    cloud.save({ url: "", token: "" });
+    setCloudCfg({ url: "", token: "" });
+    setSync("off");
+    showToast("接続を解除しました(データは端末とシートに残ります)");
+  };
+
+  const openCount = data.tasks.filter(function (t) { return t.status !== "done"; }).length;
+  const overdueCount = data.tasks.filter(function (t) { return t.status !== "done" && t.due && daysUntil(t.due) < 0; }).length;
+
+  const newTaskTemplate = function (extra) {
+    return Object.assign({
+      id: uid(), title: "", note: "", due: "", importance: "中", assignee: "自分",
+      requester: "", tags: [], repeat: "", planned: null, status: "open", source: "direct", createdAt: todayStr(),
+    }, extra || {});
+  };
+
+  const NAV = [
+    { key: "today", label: "今日", icon: "📆" },
+    { key: "memo", label: "メモ", icon: "✏️" },
+    { key: "tasks", label: "タスク", icon: "☑️" },
+    { key: "meeting", label: "会議", icon: "🗣️" },
+    { key: "members", label: "メンバー", icon: "👥" },
+  ];
+
+  return (
+    <div style={{ minHeight: "100vh" }}>
+      <header className="app-header">
+        <div className="container header-inner">
+          <div>
+            <div className="bold" style={{ fontSize: "15px", letterSpacing: ".04em" }}>凪タスク帳</div>
+            <div className="small" style={{ opacity: .7 }}>メモから始まるタスク管理</div>
+          </div>
+          <div className="row">
+            <div className="small" style={{ textAlign: "right", lineHeight: 1.3 }}>
+              <div><span className="bold" style={{ fontSize: "16px" }}>{openCount}</span> 未完了</div>
+              {overdueCount > 0 && <div className="bold" style={{ color: "#FFB4A6" }}>期限切れ {overdueCount}</div>}
+            </div>
+            <span className="small" style={{ opacity: .9 }}>
+              {sync === "off" ? "☁️ 未接続" : sync === "loading" ? "↻ 読込中" : sync === "saving" ? "↻ 同期中" : sync === "ok" ? "✓ 同期済" : "⚠️ エラー"}
+            </span>
+            <button onClick={function () { setShowData(true); }} title="データの出力・読み込み"
+              style={{ fontSize: "20px", padding: "4px 2px 4px 8px" }}>💾</button>
+          </div>
+        </div>
+      </header>
+
+      <main className="container" style={{ paddingTop: "16px", paddingBottom: "92px" }}>
+        {!store.ok && (
+          <div className="banner mb3">
+            ⚠️ この環境では自動保存できません(プレビュー画面など)。ファイルをダウンロードしてブラウザで開くと、この端末に自動保存されます。
+          </div>
+        )}
+        {tab === "today" && <TodayTab data={data} toggleDone={toggleDone} onEdit={function (t) { setEditTask(Object.assign({}, t)); }} onSchedule={function (t) { setScheduleTask(t); }} />}
+        {tab === "memo" && <MemoTab data={data} update={update} onMakeTask={function (memo) { setEditTask(newTaskTemplate({ title: memo.text, source: "memo", fromMemoId: memo.id })); }} />}
+        {tab === "tasks" && <TaskTab data={data} toggleDone={toggleDone} onNew={function () { setEditTask(newTaskTemplate()); }} onEdit={function (t) { setEditTask(Object.assign({}, t)); }} onSchedule={function (t) { setScheduleTask(t); }} />}
+        {tab === "meeting" && <MeetingTab data={data} update={update} showToast={showToast} />}
+        {tab === "members" && <MemberTab data={data} update={update} onEdit={function (t) { setEditTask(Object.assign({}, t)); }} toggleDone={toggleDone} onSchedule={function (t) { setScheduleTask(t); }} />}
+      </main>
+
+      {editTask && (
+        <TaskModal task={editTask} members={data.members} allTags={data.tags}
+          impGuide={data.impGuide || DEFAULT_GUIDE} onSaveGuide={saveGuide}
+          onSave={saveTask} onDelete={deleteTask} onClose={function () { setEditTask(null); }} />
+      )}
+      {scheduleTask && (
+        <ScheduleModal task={scheduleTask} onPlanned={setPlanned} showToast={showToast} onClose={function () { setScheduleTask(null); }} />
+      )}
+      {showData && (
+        <DataModal data={data} update={update} showToast={showToast} onClose={function () { setShowData(false); }}
+          cloudCfg={cloudCfg} sync={sync} onConnect={connectCloud} onPull={pullCloud} onPush={pushNow} onDisconnect={disconnectCloud} />
+      )}
+
+      {toast && (
+        <div style={{ position: "fixed", left: "50%", transform: "translateX(-50%)", bottom: "96px", zIndex: 60, background: "var(--ink)", color: "#fff", fontSize: "13px", padding: "8px 16px", borderRadius: "999px", whiteSpace: "nowrap", boxShadow: "0 4px 12px rgba(20,28,48,.3)" }}>
+          {toast}
+        </div>
+      )}
+
+      <nav className="nav">
+        <div className="nav-inner">
+          {NAV.map(function (t) {
+            return (
+              <button key={t.key} className={"nav-btn" + (tab === t.key ? " active" : "")} onClick={function () { setTab(t.key); }}>
+                <span className="nav-icon">{t.icon}</span>
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+      </nav>
+    </div>
+  );
+}
+
+// ============ データ出力/読み込み ============
+function DataModal({ data, update, showToast, onClose, cloudCfg, sync, onConnect, onPull, onPush, onDisconnect }) {
+  const fileRef = useRef(null);
+  const [url, setUrl] = useState(cloudCfg.url || "");
+  const [token, setToken] = useState(cloudCfg.token || "");
+
+  const exportCsv = function () {
+    download("凪タスク帳_タスク_" + todayStr() + ".csv", tasksToCsv(data.tasks), "text/csv;charset=utf-8");
+    showToast("CSVを出力しました");
+  };
+  const exportJson = function () {
+    download("凪タスク帳_バックアップ_" + todayStr() + ".json", JSON.stringify(data, null, 2), "application/json");
+    showToast("バックアップを出力しました");
+  };
+  const onFile = function (e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function () {
+      const text = String(reader.result);
+      if (/\.json$/i.test(file.name)) {
+        try {
+          const parsed = JSON.parse(text);
+          if (!parsed || !Array.isArray(parsed.tasks)) throw new Error("bad");
+          if (window.confirm("バックアップを読み込みます。この端末の現在のデータは置き換えられます。よろしいですか?")) {
+            update(Object.assign({}, emptyData, parsed));
+            showToast("バックアップを読み込みました(" + parsed.tasks.length + "件のタスク)");
+            onClose();
+          }
+        } catch (err) {
+          window.alert("JSONの読み込みに失敗しました。凪タスク帳のバックアップファイルか確認してください。");
+        }
+      } else {
+        const tasks = csvToTasks(text);
+        if (tasks === null) {
+          window.alert("CSVのヘッダーが一致しません。1行目に「タスク名」列が必要です(このアプリのCSV出力形式に合わせてください)。");
+        } else if (tasks.length === 0) {
+          window.alert("読み込めるタスクがありませんでした。");
+        } else {
+          const tags = data.tags.slice();
+          tasks.forEach(function (t) { (t.tags || []).forEach(function (n) { if (tags.indexOf(n) === -1) tags.push(n); }); });
+          update(Object.assign({}, data, { tasks: data.tasks.concat(tasks), tags: tags }));
+          showToast(tasks.length + "件のタスクを追加しました");
+          onClose();
+        }
+      }
+      e.target.value = "";
+    };
+    reader.readAsText(file, "UTF-8");
+  };
+
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal" onClick={function (e) { e.stopPropagation(); }}>
+        <div className="bold mb1" style={{ color: "var(--ink)", fontSize: "14px" }}>💾 データと連携</div>
+        <div className="small muted mb3">スプレッドシートに接続すると、変更が自動でシートに書き込まれ、開くたびにシートから読み込まれます。</div>
+
+        <div className="label">☁️ スプレッドシート連携</div>
+        {cloudCfg.url ? (
+          <div className="mb4">
+            <div className="small muted mb2">
+              接続中({sync === "ok" ? "✓ 同期済み" : sync === "saving" || sync === "loading" ? "↻ 同期中…" : "⚠️ エラーあり"})。PC・スマホ・部下の端末も同じURLと合言葉で接続すれば、全員で同じデータを使えます。
+            </div>
+            <div className="row mb2">
+              <button className="btn btn-ghost btn-sm flex1" onClick={onPull}>⬇ シートから読み込み直す</button>
+              <button className="btn btn-ghost btn-sm flex1" onClick={onPush}>⬆ 今すぐ書き込む</button>
+            </div>
+            <button className="btn btn-sm muted" onClick={onDisconnect}>接続を解除する(データは端末とシートに残ります)</button>
+          </div>
+        ) : (
+          <div className="mb4">
+            <div className="small muted mb2">
+              Googleスプレッドシートに接続すると、PC⇔スマホ⇔部下の端末すべてで同じデータになります。設置手順は「連携用GASコード」ファイルの冒頭を見てください。
+            </div>
+            <input className="input mb2" value={url} onChange={function (e) { setUrl(e.target.value); }}
+              placeholder="ウェブアプリのURL(https://script.google.com/macros/s/…/exec)" />
+            <input className="input mb2" value={token} onChange={function (e) { setToken(e.target.value); }}
+              placeholder="合言葉(GASコードのTOKENと同じもの)" />
+            <button className="btn btn-ink btn-block" onClick={function () { if (url.trim()) onConnect({ url: url.trim(), token: token.trim() }); }}>
+              🔗 接続する
+            </button>
+          </div>
+        )}
+
+        <div className="small muted mb3">
+          下の出力・読み込みはバックアップ・引き継ぎ用です。連携していない場合、データは<b>この端末のブラウザ内</b>に保存されています。
+        </div>
+
+        <div className="label">出力</div>
+        <div className="stack mb4">
+          <button className="btn btn-ink btn-block" onClick={exportJson}>💾 全データをバックアップ(JSON) — 端末間の移動・引き継ぎ用</button>
+          <button className="btn btn-ghost btn-block" onClick={exportCsv}>📄 タスク一覧をCSVで出力 — Excelで開ける・共有用</button>
+        </div>
+
+        <div className="label">読み込み</div>
+        <button className="btn btn-ghost btn-block mb2" onClick={function () { if (fileRef.current) fileRef.current.click(); }}>
+          📥 ファイルを選んで読み込む(JSON / CSV)
+        </button>
+        <input ref={fileRef} type="file" accept=".json,.csv" style={{ display: "none" }} onChange={onFile} />
+        <div className="small muted mb4" style={{ lineHeight: 1.7 }}>
+          ・JSON: 全データを丸ごと復元(現在のデータは置き換え)<br />
+          ・CSV: タスクを追加読み込み(既存データはそのまま)<br />
+          ・端末間の移動: 出力したJSONをGoogleドライブやLINE・メールで送り、もう一方の端末で読み込む
+        </div>
+
+        <button className="btn btn-ghost btn-block" onClick={onClose}>閉じる</button>
+      </div>
+    </div>
+  );
+}
+
+// ============ 今日タブ ============
+function TodayTab({ data, toggleDone, onEdit, onSchedule }) {
+  const today = todayStr();
+  const youbi = ["日","月","火","水","木","金","土"][new Date().getDay()];
+
+  const openTasks = data.tasks.filter(function (t) { return t.status !== "done"; });
+  const plannedToday = openTasks.filter(function (t) { return t.planned && t.planned.date === today; });
+  const dueTasks = openTasks.filter(function (t) { return t.due && daysUntil(t.due) <= 0; });
+  const ids = {};
+  dueTasks.concat(plannedToday).forEach(function (t) { ids[t.id] = true; });
+  const todayTasks = openTasks.filter(function (t) { return ids[t.id]; })
+    .sort(function (a, b) { return (a.due ? daysUntil(a.due) : 9999) - (b.due ? daysUntil(b.due) : 9999); });
+
+  const timeline = plannedToday.slice().sort(function (a, b) { return (a.planned.start || "99:99").localeCompare(b.planned.start || "99:99"); });
+
+  return (
+    <div>
+      <div className="row mb3" style={{ justifyContent: "space-between" }}>
+        <div className="bold xs" style={{ color: "var(--ink)", fontSize: "14px" }}>{fmtDate(today)}({youbi})</div>
+        <a href="https://calendar.google.com/" target="_blank" rel="noopener" className="btn btn-ink btn-sm" style={{ textDecoration: "none" }}>
+          📅 Googleカレンダーを開く
+        </a>
+      </div>
+
+      <div className="card mb4">
+        <div className="label mb2">今日の実行予定(⏰で時間を決めたタスク)</div>
+        {timeline.length === 0 && (
+          <div className="small muted center" style={{ padding: "12px 0" }}>
+            まだありません。下のタスクの⏰ボタンから「いつやるか」を決められます
+          </div>
+        )}
+        <div className="stack">
+          {timeline.map(function (t) {
+            return (
+              <div key={t.id} className="tl-row is-task" style={{ cursor: "pointer" }} onClick={function () { onEdit(t); }}>
+                <div className="tl-time">{t.planned.start}〜{t.planned.end}</div>
+                <div className="xs flex1" style={{ wordBreak: "break-word" }}>☑️ {t.title}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="label mb2">今日やるタスク({todayTasks.length}件) — 期限切れ・今日期限・今日に予定したもの</div>
+      <div className="stack">
+        {todayTasks.length === 0 && <div className="center muted xs" style={{ padding: "24px 0" }}>今日期限のタスクはありません 🍺</div>}
+        {todayTasks.map(function (t) {
+          return <TaskCard key={t.id} t={t} allTags={data.tags} toggleDone={toggleDone} onEdit={onEdit} onSchedule={onSchedule} />;
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ============ メモタブ ============
+function MemoTab({ data, update, onMakeTask }) {
+  const [text, setText] = useState("");
+  const inputRef = useRef(null);
+
+  const addMemo = function () {
+    const v = text.trim();
+    if (!v) return;
+    update(Object.assign({}, data, { memos: [{ id: uid(), text: v, createdAt: new Date().toISOString() }].concat(data.memos) }));
+    setText("");
+    if (inputRef.current) inputRef.current.focus();
+  };
+  const deleteMemo = function (id) {
+    update(Object.assign({}, data, { memos: data.memos.filter(function (m) { return m.id !== id; }) }));
+  };
+
+  return (
+    <div>
+      <div className="card">
+        <div className="label mb2">気づいたら、すぐメモ</div>
+        <div className="row">
+          <input ref={inputRef} className="input flex1" value={text}
+            onChange={function (e) { setText(e.target.value); }}
+            onKeyDown={function (e) { if (e.key === "Enter") addMemo(); }}
+            placeholder="例: ビザ更新の店舗リマインド送る" />
+          <button className="btn btn-ink" onClick={addMemo}>追加</button>
+        </div>
+      </div>
+
+      <div className="stack mt4">
+        {data.memos.length === 0 && (
+          <div className="center muted xs" style={{ padding: "40px 0" }}>
+            メモはまだありません。<br />思いついたことを書き留めると、ここに溜まります。
+          </div>
+        )}
+        {data.memos.map(function (m) {
+          return (
+            <div key={m.id} className="card row-start">
+              <div className="flex1">
+                <div className="xs" style={{ wordBreak: "break-word", fontSize: "13px" }}>{m.text}</div>
+                <div className="small muted mt1">
+                  {new Date(m.createdAt).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                </div>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "4px", flexShrink: 0 }}>
+                <button className="btn btn-accent btn-sm" onClick={function () { onMakeTask(m); }}>タスク化</button>
+                <button className="btn btn-sm muted" onClick={function () { deleteMemo(m.id); }}>削除</button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ============ タスクタブ ============
+function TaskTab({ data, toggleDone, onNew, onEdit, onSchedule }) {
+  const [filterState, setFilterState] = useState("open");
+  const [filterAssignee, setFilterAssignee] = useState("all");
+  const [filterImp, setFilterImp] = useState("all");
+  const [filterTag, setFilterTag] = useState("all");
+
+  const assignees = ["自分"].concat(data.members.map(function (m) { return m.name; }));
+
+  let list = data.tasks.filter(function (t) {
+    if (filterState === "open" && t.status === "done") return false;
+    if (filterState === "done" && t.status !== "done") return false;
+    if (filterAssignee !== "all" && t.assignee !== filterAssignee) return false;
+    if (filterImp !== "all" && t.importance !== filterImp) return false;
+    if (filterTag !== "all" && (t.tags || []).indexOf(filterTag) === -1) return false;
+    return true;
+  });
+  const impRank = { "高": 0, "中": 1, "低": 2 };
+  list = list.slice().sort(function (a, b) {
+    const da = a.due ? daysUntil(a.due) : 9999;
+    const db = b.due ? daysUntil(b.due) : 9999;
+    if (da !== db) return da - db;
+    const ra = impRank[a.importance] !== undefined ? impRank[a.importance] : 1;
+    const rb = impRank[b.importance] !== undefined ? impRank[b.importance] : 1;
+    return ra - rb;
+  });
+
+  const open = data.tasks.filter(function (t) { return t.status !== "done"; });
+  const stats = {
+    overdue: open.filter(function (t) { return t.due && daysUntil(t.due) < 0; }).length,
+    today: open.filter(function (t) { return t.due && daysUntil(t.due) === 0; }).length,
+    open: open.length,
+  };
+
+  return (
+    <div>
+      <div className="grid3 mb3">
+        {[
+          { n: stats.overdue, label: "期限切れ", color: stats.overdue > 0 ? "var(--accent)" : "var(--ink)" },
+          { n: stats.today, label: "今日まで", color: stats.today > 0 ? "var(--amber)" : "var(--ink)" },
+          { n: stats.open, label: "未完了", color: "var(--ink)" },
+        ].map(function (s, i) {
+          return (
+            <div key={i} className="card center" style={{ padding: "8px" }}>
+              <div className="bold" style={{ fontSize: "17px", color: s.color }}>{s.n}</div>
+              <div className="small muted">{s.label}</div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="filters mb3">
+        <select className="select" value={filterState} onChange={function (e) { setFilterState(e.target.value); }}>
+          <option value="open">未完了</option><option value="done">完了済み</option><option value="all">すべて</option>
+        </select>
+        <select className="select" value={filterTag} onChange={function (e) { setFilterTag(e.target.value); }}>
+          <option value="all">🏷 全タグ</option>
+          {data.tags.map(function (t) { return <option key={t} value={t}>{t}</option>; })}
+        </select>
+        <select className="select" value={filterAssignee} onChange={function (e) { setFilterAssignee(e.target.value); }}>
+          <option value="all">担当: 全員</option>
+          {assignees.map(function (a) { return <option key={a} value={a}>{a}</option>; })}
+        </select>
+        <select className="select" value={filterImp} onChange={function (e) { setFilterImp(e.target.value); }}>
+          <option value="all">重要度: 全部</option><option value="高">高のみ</option><option value="中">中のみ</option><option value="低">低のみ</option>
+        </select>
+        <button className="btn btn-ink btn-sm" style={{ marginLeft: "auto", flexShrink: 0 }} onClick={onNew}>＋ 新規</button>
+      </div>
+
+      <div className="stack">
+        {list.length === 0 && <div className="center muted xs" style={{ padding: "40px 0" }}>該当するタスクはありません</div>}
+        {list.map(function (t) {
+          return <TaskCard key={t.id} t={t} allTags={data.tags} toggleDone={toggleDone} onEdit={onEdit} onSchedule={onSchedule} />;
+        })}
+      </div>
+    </div>
+  );
+}
+
+function TaskCard({ t, allTags, toggleDone, onEdit, onSchedule }) {
+  const d = dueInfo(t.due, t.status);
+  const done = t.status === "done";
+  return (
+    <div className="task-card" style={{ opacity: done ? .55 : 1 }}>
+      <div className="imp-bar" style={{ background: IMP_COLOR[t.importance] || "var(--gray)" }} />
+      <button className="check-btn" onClick={function () { toggleDone(t.id); }} aria-label="完了切り替え">
+        <span className={"check-circle" + (done ? " done" : "")}>{done ? "✓" : ""}</span>
+      </button>
+      <div className="flex1" style={{ padding: "10px 8px 10px 0", cursor: "pointer" }} onClick={function () { onEdit(t); }}>
+        <div style={{ fontSize: "13px", fontWeight: 500, wordBreak: "break-word", textDecoration: done ? "line-through" : "none" }}>
+          {t.repeat ? "🔁 " : ""}{t.title}
+        </div>
+        <div className="wrap" style={{ marginTop: "6px" }}>
+          <span className="chip" style={{ background: d.bg, color: d.fg }}>{d.label}</span>
+          <span className="chip bold" style={{ background: IMP_COLOR[t.importance] || "var(--gray)", color: "#fff" }}>{t.importance}</span>
+          {(t.tags || []).map(function (tag) {
+            return <span key={tag} className="chip" style={{ background: tagColor(tag, allTags), color: "#fff" }}>{tag}</span>;
+          })}
+          {t.assignee && <span className="chip" style={{ background: "#EAEEF6", color: "var(--ink-soft)" }}>👤 {t.assignee}</span>}
+          {t.requester && <span className="chip" style={{ background: "#F1EAF6", color: "#6B4E8A" }}>📩 {t.requester}</span>}
+          {t.planned && <span className="chip" style={{ background: "#E4F0EA", color: "#2E6B50" }}>⏰ {fmtDate(t.planned.date)} {t.planned.start}</span>}
+        </div>
+      </div>
+      {onSchedule && !done && (
+        <button style={{ padding: "0 8px", fontSize: "18px", flexShrink: 0 }} title="いつやるか決めてカレンダーに登録"
+          onClick={function (e) { e.stopPropagation(); onSchedule(t); }}>
+          ⏰
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ============ タスク編集モーダル ============
+function TaskModal({ task, members, allTags, impGuide, onSaveGuide, onSave, onDelete, onClose }) {
+  const [t, setT] = useState(Object.assign({ tags: [], repeat: "", requester: "" }, task));
+  const [newTags, setNewTags] = useState([]);
+  const [tagInput, setTagInput] = useState("");
+  const [showGuide, setShowGuide] = useState(false);
+  const [guideText, setGuideText] = useState(impGuide);
+
+  const isNew = !task.title && task.source === "direct";
+  const assignees = ["自分"].concat(members.map(function (m) { return m.name; }));
+  if (t.assignee && assignees.indexOf(t.assignee) === -1) assignees.push(t.assignee);
+
+  const displayTags = allTags.concat(newTags.filter(function (n) { return allTags.indexOf(n) === -1; }));
+
+  const set = function (k, v) { setT(function (p) { const n = Object.assign({}, p); n[k] = v; return n; }); };
+  const toggleTag = function (name) {
+    const cur = t.tags || [];
+    set("tags", cur.indexOf(name) >= 0 ? cur.filter(function (x) { return x !== name; }) : cur.concat([name]));
+  };
+  const addNewTag = function () {
+    const v = tagInput.trim();
+    if (!v || displayTags.indexOf(v) >= 0) { setTagInput(""); return; }
+    setNewTags(function (p) { return p.concat([v]); });
+    set("tags", (t.tags || []).concat([v]));
+    setTagInput("");
+  };
+
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal" onClick={function (e) { e.stopPropagation(); }}>
+        <div className="bold mb3" style={{ color: "var(--ink)", fontSize: "14px" }}>
+          {task.source === "memo" ? "メモをタスクにする" : isNew ? "新しいタスク" : "タスクを編集"}
+        </div>
+
+        <label className="label">タスク名</label>
+        <input className="input mb3" value={t.title} onChange={function (e) { set("title", e.target.value); }} placeholder="何をする?" />
+
+        <div className="grid2 mb3">
+          <div>
+            <label className="label">期限</label>
+            <input className="input" type="date" value={t.due || ""} onChange={function (e) { set("due", e.target.value); }} />
+          </div>
+          <div>
+            <label className="label">繰り返し</label>
+            <select className="select input" value={t.repeat || ""} onChange={function (e) { set("repeat", e.target.value); }}>
+              <option value="">なし</option><option value="毎日">毎日</option><option value="毎週">毎週</option><option value="毎月">毎月</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="grid2 mb3">
+          <div>
+            <label className="label">担当者</label>
+            <select className="select input" value={t.assignee || "自分"} onChange={function (e) { set("assignee", e.target.value); }}>
+              {assignees.map(function (a) { return <option key={a} value={a}>{a}</option>; })}
+            </select>
+          </div>
+          <div>
+            <label className="label">依頼元(任意)</label>
+            <input className="input" value={t.requester || ""} onChange={function (e) { set("requester", e.target.value); }} placeholder="例: 村上さん" />
+          </div>
+        </div>
+
+        <div className="row mb1" style={{ justifyContent: "space-between" }}>
+          <label className="label" style={{ marginBottom: 0 }}>重要度</label>
+          <button className="btn btn-sm" onClick={function () { setShowGuide(!showGuide); }}
+            style={showGuide ? { background: "var(--ink)", color: "#fff" } : { background: "var(--bg)", color: "var(--ink-soft)", border: "1px solid var(--line)" }}>
+            💡 判断基準
+          </button>
+        </div>
+        {showGuide && (
+          <div className="mb2" style={{ background: "#FFF9EC", border: "1px solid #EFDDB0", borderRadius: "10px", padding: "8px" }}>
+            <textarea className="textarea" rows={11} value={guideText}
+              onChange={function (e) { setGuideText(e.target.value); }}
+              onBlur={function () { onSaveGuide(guideText); }}
+              style={{ background: "transparent", border: "none", fontSize: "11px", color: "#5A4A20", padding: 0 }} />
+            <div className="small" style={{ textAlign: "right", color: "#B09A5A" }}>編集すると自動保存されます</div>
+          </div>
+        )}
+        <div className="row mb3">
+          {["高", "中", "低"].map(function (imp) {
+            return (
+              <button key={imp} className="btn flex1" onClick={function () { set("importance", imp); }}
+                style={t.importance === imp
+                  ? { background: IMP_COLOR[imp], color: "#fff" }
+                  : { background: "var(--bg)", color: "var(--gray)", border: "1px solid var(--line)" }}>
+                {imp}
+              </button>
+            );
+          })}
+        </div>
+
+        <label className="label">タグ(プロジェクト・ジャンル)</label>
+        <div className="wrap mb2">
+          {displayTags.length === 0 && <span className="small muted">下の欄からタグを作成できます</span>}
+          {displayTags.map(function (name) {
+            const on = (t.tags || []).indexOf(name) >= 0;
+            return (
+              <button key={name} className="chip" onClick={function () { toggleTag(name); }}
+                style={on
+                  ? { background: tagColor(name, displayTags), color: "#fff", padding: "5px 10px" }
+                  : { background: "var(--bg)", color: "var(--gray)", border: "1px solid var(--line)", padding: "5px 10px" }}>
+                {name}
+              </button>
+            );
+          })}
+        </div>
+        <div className="row mb3">
+          <input className="input flex1" style={{ fontSize: "11px", padding: "6px 12px" }} value={tagInput}
+            onChange={function (e) { setTagInput(e.target.value); }}
+            onKeyDown={function (e) { if (e.key === "Enter") addNewTag(); }}
+            placeholder="新しいタグ(例: 外国籍、採用、会議)" />
+          <button className="btn btn-ghost btn-sm" onClick={addNewTag}>＋作成</button>
+        </div>
+
+        <label className="label">メモ(任意)</label>
+        <textarea className="textarea input mb4" rows={2} value={t.note || ""} onChange={function (e) { set("note", e.target.value); }} />
+
+        <div className="row">
+          {!isNew && task.source !== "memo" && (
+            <button className="btn" style={{ color: "var(--accent)", background: "#FBE3DF" }} onClick={function () { onDelete(t.id); }}>削除</button>
+          )}
+          <button className="btn btn-ghost flex1" onClick={onClose}>キャンセル</button>
+          <button className="btn btn-ink flex1" onClick={function () { if (t.title.trim()) onSave(Object.assign({}, t, { title: t.title.trim() }), newTags); }}>保存</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============ いつやる?モーダル ============
+function ScheduleModal({ task, onPlanned, showToast, onClose }) {
+  const [date, setDate] = useState((task.planned && task.planned.date) || todayStr());
+  const [start, setStart] = useState((task.planned && task.planned.start) || "10:00");
+  const [dur, setDur] = useState(60);
+
+  const endTime = function () {
+    const p = start.split(":").map(Number);
+    const total = p[0] * 60 + (p[1] || 0) + Number(dur);
+    return String(Math.floor(total / 60) % 24).padStart(2, "0") + ":" + String(total % 60).padStart(2, "0");
+  };
+  const openGcal = function () {
+    const end = endTime();
+    const fmt = function (d, tm) { return d.replace(/-/g, "") + "T" + tm.replace(":", "") + "00"; };
+    const url = "https://calendar.google.com/calendar/render?action=TEMPLATE&text=" +
+      encodeURIComponent("【タスク】" + task.title) + "&dates=" + fmt(date, start) + "/" + fmt(date, end) +
+      "&details=" + encodeURIComponent((task.requester ? "依頼元: " + task.requester + "。" : "") + "凪タスク帳より");
+    window.open(url, "_blank");
+    onPlanned(task.id, { date: date, start: start, end: end });
+    onClose();
+  };
+  const recordOnly = function () {
+    onPlanned(task.id, { date: date, start: start, end: endTime() });
+    showToast("実行予定を記録しました");
+    onClose();
+  };
+
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal" onClick={function (e) { e.stopPropagation(); }}>
+        <div className="bold" style={{ color: "var(--ink)", fontSize: "14px" }}>いつやる?</div>
+        <div className="small muted mb3" style={{ wordBreak: "break-word" }}>{task.title}</div>
+
+        <div className="grid2 mb3">
+          <div>
+            <label className="label">日付</label>
+            <input className="input" type="date" value={date} onChange={function (e) { setDate(e.target.value); }} />
+          </div>
+          <div>
+            <label className="label">開始時刻</label>
+            <input className="input" type="time" value={start} onChange={function (e) { setStart(e.target.value); }} />
+          </div>
+        </div>
+
+        <label className="label">所要時間</label>
+        <div className="row mb1">
+          {[30, 60, 90, 120].map(function (d) {
+            return (
+              <button key={d} className="btn btn-sm flex1" onClick={function () { setDur(d); }}
+                style={dur === d ? { background: "var(--ink)", color: "#fff" } : { background: "var(--bg)", color: "var(--gray)", border: "1px solid var(--line)" }}>
+                {d}分
+              </button>
+            );
+          })}
+        </div>
+        <div className="small muted mb4">{fmtDate(date)} {start}〜{endTime()} で登録します</div>
+
+        <button className="btn btn-ink btn-block mb2" onClick={openGcal}>📅 Googleカレンダーに登録(画面が開きます)</button>
+        <div className="row">
+          <button className="btn btn-ghost flex1" onClick={recordOnly}>アプリ内だけ記録</button>
+          <button className="btn btn-sm muted" onClick={onClose}>閉じる</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============ 会議タブ ============
+function MeetingTab({ data, update, showToast }) {
+  const [title, setTitle] = useState("");
+  const [notes, setNotes] = useState("");
+  const [candidates, setCandidates] = useState(null);
+  const [error, setError] = useState("");
+  const [openMeeting, setOpenMeeting] = useState(null);
+
+  const memberNames = ["自分"].concat(data.members.map(function (m) { return m.name; }));
+
+  const extract = function () {
+    setError("");
+    const lines = notes.split(/\r?\n/)
+      .map(function (l) { return l.replace(/^[\s・\-\*●○◆▶►\d\.\)）]+/, "").trim(); })
+      .filter(function (l) { return l.length > 1; });
+    if (lines.length === 0) { setError("行が見つかりませんでした。1行に1件ずつ書いてください。"); return; }
+    setCandidates(lines.map(function (l) {
+      return { checked: true, title: l, assignee: "自分", due: "", importance: "中" };
+    }));
+  };
+
+  const addSelected = function () {
+    const picked = candidates.filter(function (c) { return c.checked && c.title.trim(); });
+    if (picked.length === 0) return;
+    const meetingId = uid();
+    const meeting = {
+      id: meetingId,
+      title: title.trim() || "会議メモ " + fmtDate(todayStr()),
+      date: todayStr(),
+      notes: notes,
+      taskCount: picked.length,
+    };
+    const tagName = "会議";
+    const tags = data.tags.indexOf(tagName) >= 0 ? data.tags : data.tags.concat([tagName]);
+    const newTasks = picked.map(function (c) {
+      return {
+        id: uid(), title: c.title.trim(), note: "会議「" + meeting.title + "」より",
+        due: c.due || "", importance: c.importance, assignee: c.assignee || "自分",
+        requester: "", tags: [tagName], repeat: "", planned: null,
+        status: "open", source: "meeting", meetingId: meetingId, createdAt: todayStr(),
+      };
+    });
+    update(Object.assign({}, data, { tasks: data.tasks.concat(newTasks), meetings: [meeting].concat(data.meetings), tags: tags }));
+    setTitle(""); setNotes(""); setCandidates(null);
+    showToast(picked.length + "件のタスクを追加しました");
+  };
+
+  const setCand = function (i, k, v) {
+    setCandidates(function (prev) {
+      return prev.map(function (c, idx) { if (idx !== i) return c; const n = Object.assign({}, c); n[k] = v; return n; });
+    });
+  };
+
+  return (
+    <div>
+      <div className="card">
+        <div className="label mb2">議事録・打合せメモを貼り付け → 行ごとにタスク候補に分解(1行=1タスク)</div>
+        <input className="input mb2" value={title} onChange={function (e) { setTitle(e.target.value); }} placeholder="会議名(例: 木曜定例・村上本部長)" />
+        <textarea className="textarea input" rows={6} value={notes} onChange={function (e) { setNotes(e.target.value); }}
+          placeholder={"やることを1行ずつ書いて(貼り付けて)ください。\n例:\n・外国籍スタッフのアンケート配布(田中さん)\n・ビザ更新リストの確認\n・稟議書の修正を村上さんに送る"} />
+        <button className="btn btn-accent btn-block mt2" onClick={extract} disabled={!notes.trim()}>
+          📋 行からタスク候補を作る
+        </button>
+        {error && <div className="small mt2" style={{ color: "var(--accent)" }}>{error}</div>}
+      </div>
+
+      {candidates && (
+        <div className="card mt3" style={{ border: "2px solid var(--ink)" }}>
+          <div className="label mb2" style={{ color: "var(--ink)" }}>タスク候補({candidates.length}件) — 内容・期限・担当を確認して追加</div>
+          <div className="stack" style={{ marginBottom: "12px" }}>
+            {candidates.map(function (c, i) {
+              return (
+                <div key={i} style={{ background: "var(--bg)", borderRadius: "8px", padding: "8px", opacity: c.checked ? 1 : .45 }}>
+                  <div className="row-start">
+                    <input type="checkbox" checked={c.checked} onChange={function (e) { setCand(i, "checked", e.target.checked); }}
+                      style={{ width: "16px", height: "16px", marginTop: "6px", flexShrink: 0 }} />
+                    <input className="input flex1" style={{ background: "#fff" }} value={c.title} onChange={function (e) { setCand(i, "title", e.target.value); }} />
+                  </div>
+                  <div className="row mt2" style={{ paddingLeft: "24px" }}>
+                    <input className="input flex1" style={{ background: "#fff", fontSize: "11px", padding: "4px 8px" }} type="date" value={c.due} onChange={function (e) { setCand(i, "due", e.target.value); }} />
+                    <select className="select" style={{ background: "#fff", fontSize: "11px", padding: "4px 8px", width: "auto" }} value={c.assignee} onChange={function (e) { setCand(i, "assignee", e.target.value); }}>
+                      {memberNames.map(function (a) { return <option key={a} value={a}>{a}</option>; })}
+                    </select>
+                    <select className="select" style={{ background: "#fff", fontSize: "11px", padding: "4px 8px", width: "auto" }} value={c.importance} onChange={function (e) { setCand(i, "importance", e.target.value); }}>
+                      <option value="高">高</option><option value="中">中</option><option value="低">低</option>
+                    </select>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <button className="btn btn-ink btn-block" onClick={addSelected}>✓ 選択したタスクを追加</button>
+        </div>
+      )}
+
+      {data.meetings.length > 0 && (
+        <div className="mt4">
+          <div className="label mb2">会議の記録</div>
+          <div className="stack">
+            {data.meetings.map(function (m) {
+              return (
+                <div key={m.id} className="card">
+                  <button style={{ width: "100%", textAlign: "left" }} onClick={function () { setOpenMeeting(openMeeting === m.id ? null : m.id); }}>
+                    <div className="row" style={{ justifyContent: "space-between" }}>
+                      <div className="xs" style={{ fontSize: "13px", fontWeight: 500 }}>{m.title}</div>
+                      <div className="small muted" style={{ flexShrink: 0, marginLeft: "8px" }}>{fmtDate(m.date)} ・ {m.taskCount}件</div>
+                    </div>
+                  </button>
+                  {openMeeting === m.id && (
+                    <div className="small mt2" style={{ whiteSpace: "pre-wrap", background: "var(--bg)", borderRadius: "8px", padding: "8px", color: "#4A5568" }}>
+                      {m.notes}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============ メンバータブ ============
+function MemberTab({ data, update, onEdit, toggleDone, onSchedule }) {
+  const [name, setName] = useState("");
+  const [openMember, setOpenMember] = useState(null);
+
+  const addMember = function () {
+    const v = name.trim();
+    if (!v || data.members.some(function (m) { return m.name === v; })) return;
+    update(Object.assign({}, data, { members: data.members.concat([{ id: uid(), name: v }]) }));
+    setName("");
+  };
+  const removeMember = function (id) {
+    update(Object.assign({}, data, { members: data.members.filter(function (m) { return m.id !== id; }) }));
+  };
+
+  const rows = [{ id: "self", name: "自分" }].concat(data.members);
+
+  return (
+    <div>
+      <div className="card">
+        <div className="label mb2">メンバーを追加(部下・チーム)</div>
+        <div className="row">
+          <input className="input flex1" value={name}
+            onChange={function (e) { setName(e.target.value); }}
+            onKeyDown={function (e) { if (e.key === "Enter") addMember(); }}
+            placeholder="名前(例: 田中)" />
+          <button className="btn btn-ink" onClick={addMember}>追加</button>
+        </div>
+      </div>
+
+      <div className="stack mt4">
+        {rows.map(function (m) {
+          const mine = data.tasks.filter(function (t) { return t.assignee === m.name; });
+          const open = mine.filter(function (t) { return t.status !== "done"; });
+          const overdue = open.filter(function (t) { return t.due && daysUntil(t.due) < 0; }).length;
+          const done = mine.length - open.length;
+          const pct = mine.length === 0 ? 0 : Math.round((done / mine.length) * 100);
+          const expanded = openMember === m.id;
+          return (
+            <div key={m.id} className="card">
+              <button style={{ width: "100%", textAlign: "left" }} onClick={function () { setOpenMember(expanded ? null : m.id); }}>
+                <div className="row" style={{ justifyContent: "space-between" }}>
+                  <div className="bold xs" style={{ color: "var(--ink)", fontSize: "13px" }}>👤 {m.name}</div>
+                  <div className="small muted">
+                    未完了 <span className="bold" style={{ color: "var(--ink)" }}>{open.length}</span>
+                    {overdue > 0 && <span className="bold" style={{ color: "var(--accent)", marginLeft: "8px" }}>期限切れ {overdue}</span>}
+                  </div>
+                </div>
+                <div className="progress-track mt2"><div className="progress-fill" style={{ width: pct + "%" }} /></div>
+                <div className="small muted mt1">完了率 {pct}%({done}/{mine.length}件)</div>
+              </button>
+              {expanded && (
+                <div className="stack mt3">
+                  {open.length === 0 && <div className="small muted center" style={{ padding: "8px 0" }}>未完了タスクはありません</div>}
+                  {open.slice().sort(function (a, b) { return (a.due ? daysUntil(a.due) : 9999) - (b.due ? daysUntil(b.due) : 9999); })
+                    .map(function (t) { return <TaskCard key={t.id} t={t} allTags={data.tags} toggleDone={toggleDone} onEdit={onEdit} onSchedule={onSchedule} />; })}
+                  {m.id !== "self" && (
+                    <button className="btn btn-sm muted" style={{ textAlign: "left" }} onClick={function () { removeMember(m.id); }}>このメンバーを削除</button>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
