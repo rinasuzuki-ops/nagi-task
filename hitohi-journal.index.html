@@ -1,0 +1,1398 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>ひとひ帳</title>
+<meta name="theme-color" content="#1A1E2C" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="ひとひ帳" />
+<link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;600;700&family=Zen+Maru+Gothic:wght@400;500;700&display=swap" rel="stylesheet" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; background: #1A1E2C; }
+  * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
+  textarea:focus, input:focus { border-color: #E3A552 !important; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="env,react">
+const { useState, useEffect, useCallback } = React;
+
+/* ============ 保存先の自動切り替え ============ */
+/* Claudeアーティファクト内では window.storage、ブラウザ単体では localStorage を使う */
+const store = (() => {
+  if (window.storage && window.storage.get && window.storage.set) return window.storage;
+  const PREFIX = "hitohi:";
+  return {
+    get: async (k) => {
+      const v = localStorage.getItem(PREFIX + k);
+      return v === null ? null : { key: k, value: v };
+    },
+    set: async (k, v) => {
+      localStorage.setItem(PREFIX + k, v);
+      return { key: k, value: v };
+    },
+  };
+})();
+
+/* ============ 夜の手帳パレット ============ */
+const C = {
+  bg: "#1A1E2C",
+  panel: "#232939",
+  line: "#313A52",
+  card: "#F6F0E1",
+  card2: "#F3E8DA",
+  cardLine: "#E2D7BF",
+  ink: "#3B342A",
+  inkSoft: "#84796A",
+  amber: "#E3A552",
+  amberDark: "#B97F33",
+  plum: "#C96F5E",
+  textOnDark: "#EAE5D7",
+  mutedOnDark: "#8E96AB",
+  green: "#7FA96B",
+  greenDark: "#5E8A4C",
+};
+
+const DISPLAY = "'Shippori Mincho', serif";
+const BODY = "'Zen Maru Gothic', 'Hiragino Maru Gothic ProN', sans-serif";
+
+/* ============ 日付ユーティリティ ============ */
+const pad = (n) => String(n).padStart(2, "0");
+const toKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const fromKey = (s) => {
+  const [y, m, d] = s.split("-").map(Number);
+  return new Date(y, m - 1, d);
+};
+const WD = ["日", "月", "火", "水", "木", "金", "土"];
+const fmtLong = (key) => {
+  const d = fromKey(key);
+  return `${d.getMonth() + 1}月${d.getDate()}日（${WD[d.getDay()]}）`;
+};
+const fmtShort = (key) => {
+  const d = fromKey(key);
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+};
+const mondayOf = (d) => {
+  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
+  return x;
+};
+const addDays = (d, n) => {
+  const x = new Date(d);
+  x.setDate(x.getDate() + n);
+  return x;
+};
+const weekDaysOf = (mondayKey) =>
+  Array.from({ length: 7 }, (_, i) => toKey(addDays(fromKey(mondayKey), i)));
+
+/* ============ 人としての日替わり質問 ============ */
+const PROMPTS = [
+  "今日、誰かに優しくできた？",
+  "感情的にならずにいられた？",
+  "今日いちばん笑ったのはいつ？",
+  "誰かの話を最後まで聴けた？",
+  "自分に正直でいられた？",
+  "今日、小さな挑戦をした？",
+  "誰かの良いところを見つけた？",
+  "「ありがとう」をちゃんと言葉にできた？",
+  "今日の自分を褒めるなら？",
+  "無理してなかった？",
+  "誰かを助けたり、助けられたりした？",
+  "今日、心が動いた瞬間は？",
+  "明日の自分に残したい気持ちは？",
+  "今日、手放せたこと・許せたことは？",
+];
+const promptFor = (key) => {
+  const d = fromKey(key);
+  const doy = Math.floor((d - new Date(d.getFullYear(), 0, 0)) / 86400000);
+  return PROMPTS[doy % PROMPTS.length];
+};
+
+const MOODS = ["😄", "🙂", "😐", "😮‍💨", "😢"];
+
+/* ============ ストレージ ============ */
+const sGet = async (k) => {
+  try {
+    const r = await store.get(k);
+    return r ? JSON.parse(r.value) : null;
+  } catch {
+    return null;
+  }
+};
+const sSet = async (k, v) => {
+  try {
+    const r = await store.set(k, JSON.stringify(v));
+    return !!r;
+  } catch {
+    return false;
+  }
+};
+
+const emptyEntry = (date) => ({
+  date,
+  diary: "",
+  gratitude: "",
+  promptAnswer: "",
+  mood: null,
+  photo: null,
+  habitChecks: {},
+});
+
+/* habit: {id, name, freq: 'daily'|'weekly', target?: number} */
+const habitFreq = (h) => h.freq || "daily";
+
+/* ============ 写真の圧縮 ============ */
+const compressImage = (file) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const max = 900;
+        let { width, height } = img;
+        if (width > max || height > max) {
+          const s = Math.min(max / width, max / height);
+          width = Math.round(width * s);
+          height = Math.round(height * s);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", 0.72));
+      };
+      img.onerror = reject;
+      img.src = e.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+
+/* ============ 共通パーツ ============ */
+const Card = ({ children, style }) => (
+  <div
+    style={{
+      background: C.card,
+      border: `1px solid ${C.cardLine}`,
+      borderRadius: 16,
+      padding: 16,
+      color: C.ink,
+      boxShadow: "0 2px 10px rgba(0,0,0,0.25)",
+      ...style,
+    }}
+  >
+    {children}
+  </div>
+);
+
+const Label = ({ children }) => (
+  <div
+    style={{
+      fontSize: 11,
+      letterSpacing: "0.12em",
+      color: C.inkSoft,
+      marginBottom: 6,
+      fontWeight: 700,
+    }}
+  >
+    {children}
+  </div>
+);
+
+const inputStyle = {
+  width: "100%",
+  background: "#FFFDF6",
+  border: "1px solid #E2D7BF",
+  borderRadius: 10,
+  padding: "10px 12px",
+  fontSize: 15,
+  color: C.ink,
+  fontFamily: BODY,
+  outline: "none",
+  boxSizing: "border-box",
+};
+
+const saveBtnStyle = (state) => ({
+  background: state === "saved" ? C.green : C.amber,
+  color: "#2A2313",
+  border: "none",
+  borderRadius: 14,
+  padding: "13px 0",
+  fontSize: 15,
+  fontWeight: 700,
+  fontFamily: BODY,
+  cursor: "pointer",
+  width: "100%",
+  transition: "background 0.2s",
+});
+const saveBtnText = (state, label) =>
+  state === "saving" ? "保存中…" : state === "saved" ? "保存したよ ✓" : state === "error" ? "保存に失敗… もう一度" : label;
+
+const navArrow = {
+  background: "#232939",
+  border: "1px solid #313A52",
+  color: "#EAE5D7",
+  borderRadius: 10,
+  width: 38,
+  height: 38,
+  fontSize: 20,
+  cursor: "pointer",
+  fontFamily: BODY,
+};
+
+const reviewLabel = {
+  fontSize: 13,
+  fontWeight: 700,
+  color: "#3B342A",
+  marginBottom: 5,
+};
+
+/* ============ 本体 ============ */
+function HitohiJournal() {
+  const todayKey = toKey(new Date());
+  const [tab, setTab] = useState("today");
+
+  const [habits, setHabits] = useState(null);
+  const [entryDate, setEntryDate] = useState(todayKey);
+  const [entry, setEntry] = useState(emptyEntry(todayKey));
+  const [entryLoading, setEntryLoading] = useState(true);
+  const [saveState, setSaveState] = useState("idle");
+
+  const [weekCache, setWeekCache] = useState({ mondayKey: null, map: {}, goal: null });
+
+  const [weekOffset, setWeekOffset] = useState(0);
+  const [weekData, setWeekData] = useState(null);
+  const [review, setReview] = useState({ wins: "", insight: "", nextWeek: "" });
+  const [reviewState, setReviewState] = useState("idle");
+  const [goal, setGoal] = useState({ text: "", achieved: false });
+  const [goalState, setGoalState] = useState("idle");
+
+  const [gratitudeLog, setGratitudeLog] = useState(null);
+  const [wishlist, setWishlist] = useState(null);
+  const [newWish, setNewWish] = useState("");
+
+  const [newHabit, setNewHabit] = useState("");
+  const [newFreq, setNewFreq] = useState("daily");
+  const [newTarget, setNewTarget] = useState(3);
+
+  useEffect(() => {
+    (async () => {
+      const h = await sGet("habits");
+      setHabits(h || []);
+    })();
+  }, []);
+
+  useEffect(() => {
+    let live = true;
+    setEntryLoading(true);
+    (async () => {
+      const e = await sGet(`entry:${entryDate}`);
+      if (live) {
+        setEntry(e || emptyEntry(entryDate));
+        setEntryLoading(false);
+        setSaveState("idle");
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [entryDate]);
+
+  useEffect(() => {
+    const mon = toKey(mondayOf(fromKey(entryDate)));
+    if (weekCache.mondayKey === mon) return;
+    let live = true;
+    (async () => {
+      const days = weekDaysOf(mon);
+      const [results, g] = await Promise.all([
+        Promise.all(days.map((k) => sGet(`entry:${k}`))),
+        sGet(`weekgoal:${mon}`),
+      ]);
+      if (!live) return;
+      const map = {};
+      days.forEach((k, i) => (map[k] = results[i]));
+      setWeekCache({ mondayKey: mon, map, goal: g });
+    })();
+    return () => {
+      live = false;
+    };
+  }, [entryDate, weekCache.mondayKey]);
+
+  const loadWeek = useCallback(async (offset) => {
+    setWeekData(null);
+    const mon = toKey(addDays(mondayOf(new Date()), offset * 7));
+    const days = weekDaysOf(mon);
+    const [results, rv, g] = await Promise.all([
+      Promise.all(days.map((k) => sGet(`entry:${k}`))),
+      sGet(`review:${mon}`),
+      sGet(`weekgoal:${mon}`),
+    ]);
+    const map = {};
+    days.forEach((k, i) => (map[k] = results[i]));
+    setWeekData({ mondayKey: mon, days, map });
+    setReview(rv || { wins: "", insight: "", nextWeek: "" });
+    setGoal(g || { text: "", achieved: false });
+    setReviewState("idle");
+    setGoalState("idle");
+  }, []);
+
+  useEffect(() => {
+    if (tab === "week") loadWeek(weekOffset);
+  }, [tab, weekOffset, loadWeek]);
+
+  useEffect(() => {
+    if (tab === "thanks" && gratitudeLog === null) {
+      (async () => setGratitudeLog((await sGet("gratitude-log")) || []))();
+    }
+    if (tab === "wish" && wishlist === null) {
+      (async () => setWishlist((await sGet("wishlist")) || []))();
+    }
+  }, [tab, gratitudeLog, wishlist]);
+
+  const saveEntry = async () => {
+    setSaveState("saving");
+    const ok = await sSet(`entry:${entryDate}`, entry);
+    const log = (await sGet("gratitude-log")) || [];
+    const filtered = log.filter((g) => g.date !== entryDate);
+    if (entry.gratitude.trim()) filtered.push({ date: entryDate, text: entry.gratitude.trim() });
+    filtered.sort((a, b) => (a.date < b.date ? 1 : -1));
+    await sSet("gratitude-log", filtered);
+    setGratitudeLog(filtered);
+    setWeekCache((wc) =>
+      wc.mondayKey === toKey(mondayOf(fromKey(entryDate)))
+        ? { ...wc, map: { ...wc.map, [entryDate]: entry } }
+        : wc
+    );
+    setSaveState(ok ? "saved" : "error");
+    if (ok) setTimeout(() => setSaveState("idle"), 2000);
+  };
+
+  const saveReview = async () => {
+    if (!weekData) return;
+    setReviewState("saving");
+    const ok = await sSet(`review:${weekData.mondayKey}`, review);
+    setReviewState(ok ? "saved" : "error");
+    if (ok) setTimeout(() => setReviewState("idle"), 2000);
+  };
+
+  const saveGoal = async () => {
+    if (!weekData) return;
+    setGoalState("saving");
+    const ok = await sSet(`weekgoal:${weekData.mondayKey}`, goal);
+    setWeekCache((wc) => (wc.mondayKey === weekData.mondayKey ? { ...wc, goal } : wc));
+    setGoalState(ok ? "saved" : "error");
+    if (ok) setTimeout(() => setGoalState("idle"), 2000);
+  };
+
+  const saveHabits = async (next) => {
+    setHabits(next);
+    await sSet("habits", next);
+  };
+
+  const saveWishlist = async (next) => {
+    setWishlist(next);
+    await sSet("wishlist", next);
+  };
+
+  const toggleHabit = (id) => {
+    setEntry((e) => ({ ...e, habitChecks: { ...e.habitChecks, [id]: !e.habitChecks[id] } }));
+  };
+
+  const onPhoto = async (file) => {
+    if (!file) return;
+    try {
+      const dataUrl = await compressImage(file);
+      setEntry((e) => ({ ...e, photo: dataUrl }));
+    } catch {
+      alert("写真の読み込みに失敗しました。別の写真で試してください。");
+    }
+  };
+
+  const weeklyCount = (h, mondayKey, map, liveDate, liveEntry) => {
+    let c = 0;
+    weekDaysOf(mondayKey).forEach((k) => {
+      const e = k === liveDate ? liveEntry : map[k];
+      if (e && e.habitChecks && e.habitChecks[h.id]) c++;
+    });
+    return c;
+  };
+
+  const canGoNextDay = entryDate < todayKey;
+
+  const HabitRow = ({ h, done, right }) => (
+    <button
+      onClick={() => toggleHabit(h.id)}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        background: done ? "#F0E4CB" : "#FFFDF6",
+        border: `1px solid ${done ? C.amber : C.cardLine}`,
+        borderRadius: 10,
+        padding: "10px 12px",
+        cursor: "pointer",
+        fontFamily: BODY,
+        fontSize: 15,
+        color: C.ink,
+        textAlign: "left",
+        width: "100%",
+      }}
+    >
+      <span
+        style={{
+          width: 22,
+          height: 22,
+          borderRadius: "50%",
+          flexShrink: 0,
+          border: `2px solid ${done ? C.amberDark : C.cardLine}`,
+          background: done ? C.amber : "transparent",
+          color: "#fff",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: 13,
+          fontWeight: 700,
+        }}
+      >
+        {done ? "✓" : ""}
+      </span>
+      <span style={{ flex: 1 }}>{h.name}</span>
+      {right}
+    </button>
+  );
+
+  /* ---- 今日 ---- */
+  const renderToday = () => {
+    const dailyHabits = (habits || []).filter((h) => habitFreq(h) === "daily");
+    const weeklyHabits = (habits || []).filter((h) => habitFreq(h) === "weekly");
+    const mon = weekCache.mondayKey;
+
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <button onClick={() => setEntryDate(toKey(addDays(fromKey(entryDate), -1)))} style={navArrow} aria-label="前の日">
+            ‹
+          </button>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontFamily: DISPLAY, fontSize: 22, color: C.textOnDark, fontWeight: 600 }}>
+              {fmtLong(entryDate)}
+            </div>
+            {entryDate !== todayKey && (
+              <button
+                onClick={() => setEntryDate(todayKey)}
+                style={{ background: "none", border: "none", color: C.amber, fontSize: 12, fontFamily: BODY, cursor: "pointer", padding: 2 }}
+              >
+                今日へ戻る
+              </button>
+            )}
+          </div>
+          <button
+            onClick={() => canGoNextDay && setEntryDate(toKey(addDays(fromKey(entryDate), 1)))}
+            style={{ ...navArrow, opacity: canGoNextDay ? 1 : 0.25 }}
+            disabled={!canGoNextDay}
+            aria-label="次の日"
+          >
+            ›
+          </button>
+        </div>
+
+        {weekCache.goal && weekCache.goal.text && (
+          <div
+            style={{
+              background: C.panel,
+              border: `1px solid ${weekCache.goal.achieved ? C.green : C.line}`,
+              borderRadius: 12,
+              padding: "10px 14px",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+            }}
+          >
+            <span style={{ fontSize: 16 }}>🎯</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 10, color: C.mutedOnDark, letterSpacing: "0.1em" }}>今週の目標</div>
+              <div style={{ fontSize: 14, color: C.textOnDark, lineHeight: 1.5 }}>{weekCache.goal.text}</div>
+            </div>
+            {weekCache.goal.achieved && <span style={{ color: C.green, fontSize: 13, fontWeight: 700 }}>達成✓</span>}
+          </div>
+        )}
+
+        {entryLoading ? (
+          <Card>
+            <div style={{ color: C.inkSoft, textAlign: "center", padding: 12 }}>読み込み中…</div>
+          </Card>
+        ) : (
+          <React.Fragment>
+            <Card>
+              <Label>きょうの習慣</Label>
+              {habits === null ? (
+                <div style={{ color: C.inkSoft }}>読み込み中…</div>
+              ) : habits.length === 0 ? (
+                <div style={{ color: C.inkSoft, fontSize: 14, lineHeight: 1.7 }}>
+                  まだ習慣がありません。
+                  <button
+                    onClick={() => setTab("habits")}
+                    style={{ background: "none", border: "none", color: C.amberDark, fontWeight: 700, cursor: "pointer", fontFamily: BODY, fontSize: 14, padding: 0 }}
+                  >
+                    「習慣」タブから追加
+                  </button>
+                  してね。
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {dailyHabits.map((h) => (
+                    <HabitRow key={h.id} h={h} done={!!entry.habitChecks[h.id]} />
+                  ))}
+                  {weeklyHabits.length > 0 && (
+                    <React.Fragment>
+                      <div style={{ fontSize: 11, color: C.inkSoft, fontWeight: 700, marginTop: 6, letterSpacing: "0.1em" }}>
+                        週の習慣（やった日にチェック）
+                      </div>
+                      {weeklyHabits.map((h) => {
+                        const c = mon ? weeklyCount(h, mon, weekCache.map, entryDate, entry) : 0;
+                        const met = c >= (h.target || 1);
+                        return (
+                          <HabitRow
+                            key={h.id}
+                            h={h}
+                            done={!!entry.habitChecks[h.id]}
+                            right={
+                              <span
+                                style={{
+                                  fontSize: 12,
+                                  fontWeight: 700,
+                                  color: met ? C.greenDark : C.inkSoft,
+                                  background: met ? "#E4EEDB" : "#F1EBDB",
+                                  borderRadius: 999,
+                                  padding: "3px 9px",
+                                  flexShrink: 0,
+                                }}
+                              >
+                                今週 {c}/{h.target || 1}{met ? " ✓" : ""}
+                              </span>
+                            }
+                          />
+                        );
+                      })}
+                    </React.Fragment>
+                  )}
+                </div>
+              )}
+            </Card>
+
+            <Card>
+              <Label>きょうの気分</Label>
+              <div style={{ display: "flex", gap: 8, justifyContent: "space-between" }}>
+                {MOODS.map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setEntry((e) => ({ ...e, mood: e.mood === m ? null : m }))}
+                    style={{
+                      flex: 1,
+                      fontSize: 26,
+                      padding: "8px 0",
+                      borderRadius: 12,
+                      border: `2px solid ${entry.mood === m ? C.amber : "transparent"}`,
+                      background: entry.mood === m ? "#F0E4CB" : "#FFFDF6",
+                      cursor: "pointer",
+                      filter: entry.mood && entry.mood !== m ? "grayscale(0.7) opacity(0.6)" : "none",
+                    }}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+            </Card>
+
+            <Card>
+              <Label>きょうの1枚</Label>
+              {entry.photo ? (
+                <div style={{ position: "relative" }}>
+                  <img src={entry.photo} alt="きょうの写真" style={{ width: "100%", borderRadius: 12, display: "block" }} />
+                  <button
+                    onClick={() => setEntry((e) => ({ ...e, photo: null }))}
+                    style={{
+                      position: "absolute",
+                      top: 8,
+                      right: 8,
+                      background: "rgba(26,30,44,0.75)",
+                      color: "#fff",
+                      border: "none",
+                      borderRadius: 8,
+                      padding: "6px 10px",
+                      fontSize: 12,
+                      fontFamily: BODY,
+                      cursor: "pointer",
+                    }}
+                  >
+                    削除
+                  </button>
+                </div>
+              ) : (
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 8,
+                    border: `2px dashed ${C.cardLine}`,
+                    borderRadius: 12,
+                    padding: "22px 0",
+                    color: C.inkSoft,
+                    fontSize: 14,
+                    cursor: "pointer",
+                  }}
+                >
+                  📷 写真を追加
+                  <input type="file" accept="image/*" style={{ display: "none" }} onChange={(ev) => onPhoto(ev.target.files && ev.target.files[0])} />
+                </label>
+              )}
+            </Card>
+
+            <Card>
+              <Label>きょうの一言日記</Label>
+              <textarea
+                value={entry.diary}
+                onChange={(ev) => setEntry((e) => ({ ...e, diary: ev.target.value }))}
+                placeholder="短くてOK。今日あったこと、思ったこと。"
+                rows={3}
+                style={{ ...inputStyle, resize: "vertical", lineHeight: 1.7 }}
+              />
+            </Card>
+
+            <Card style={{ background: C.card2 }}>
+              <Label>🧡 今日ありがとうと思った人・こと</Label>
+              <textarea
+                value={entry.gratitude}
+                onChange={(ev) => setEntry((e) => ({ ...e, gratitude: ev.target.value }))}
+                placeholder="例：面接に来てくれた〇〇さん。雨の中ありがとう。"
+                rows={2}
+                style={{ ...inputStyle, resize: "vertical", lineHeight: 1.7 }}
+              />
+              <div style={{ fontSize: 11, color: C.inkSoft, marginTop: 6 }}>書いたぶんだけ「ありがとう」タブにたまっていくよ</div>
+            </Card>
+
+            <Card>
+              <Label>人として — きょうの問い</Label>
+              <div style={{ fontFamily: DISPLAY, fontSize: 17, fontWeight: 600, marginBottom: 10, color: C.ink }}>
+                「{promptFor(entryDate)}」
+              </div>
+              <textarea
+                value={entry.promptAnswer}
+                onChange={(ev) => setEntry((e) => ({ ...e, promptAnswer: ev.target.value }))}
+                placeholder="一言でOK"
+                rows={2}
+                style={{ ...inputStyle, resize: "vertical", lineHeight: 1.7 }}
+              />
+            </Card>
+
+            <button onClick={saveEntry} disabled={saveState === "saving"} style={saveBtnStyle(saveState)}>
+              {saveBtnText(saveState, "この日を保存する")}
+            </button>
+          </React.Fragment>
+        )}
+      </div>
+    );
+  };
+
+  /* ---- 週の振り返り ---- */
+  const renderWeek = () => {
+    if (!weekData)
+      return (
+        <Card>
+          <div style={{ color: C.inkSoft, textAlign: "center", padding: 12 }}>読み込み中…</div>
+        </Card>
+      );
+
+    const { days, map } = weekData;
+    const dailyHabits = (habits || []).filter((h) => habitFreq(h) === "daily");
+    const weeklyHabits = (habits || []).filter((h) => habitFreq(h) === "weekly");
+
+    let scores = [];
+    dailyHabits.forEach((h) => {
+      let c = 0;
+      days.forEach((k) => map[k] && map[k].habitChecks && map[k].habitChecks[h.id] && c++);
+      scores.push(c / 7);
+    });
+    weeklyHabits.forEach((h) => {
+      let c = 0;
+      days.forEach((k) => map[k] && map[k].habitChecks && map[k].habitChecks[h.id] && c++);
+      scores.push(Math.min(c / (h.target || 1), 1));
+    });
+    const pct = scores.length ? Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 100) : 0;
+
+    const photos = days.filter((k) => map[k] && map[k].photo);
+    const weekThanks = days.filter((k) => map[k] && map[k].gratitude && map[k].gratitude.trim());
+
+    const dotRow = (h) => (
+      <div key={h.id} style={{ display: "flex", alignItems: "center" }}>
+        <div style={{ flex: 1, fontSize: 13, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", paddingRight: 6 }}>
+          {h.name}
+        </div>
+        {days.map((k) => {
+          const e = map[k];
+          const checked = e && e.habitChecks && e.habitChecks[h.id];
+          const future = k > todayKey;
+          return (
+            <div key={k} style={{ width: 26, display: "flex", justifyContent: "center" }}>
+              <div
+                style={{
+                  width: 14,
+                  height: 14,
+                  borderRadius: "50%",
+                  background: checked ? C.amber : "transparent",
+                  border: `2px solid ${checked ? C.amberDark : future ? "#EEE7D2" : C.cardLine}`,
+                }}
+              />
+            </div>
+          );
+        })}
+      </div>
+    );
+
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <button onClick={() => setWeekOffset((o) => o - 1)} style={navArrow} aria-label="前の週">
+            ‹
+          </button>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontFamily: DISPLAY, fontSize: 19, color: C.textOnDark, fontWeight: 600 }}>
+              {fmtShort(days[0])} 〜 {fmtShort(days[6])}
+            </div>
+            <div style={{ fontSize: 12, color: C.mutedOnDark }}>
+              {weekOffset === 0 ? "今週" : weekOffset === -1 ? "先週" : `${-weekOffset}週間前`}
+            </div>
+          </div>
+          <button
+            onClick={() => weekOffset < 0 && setWeekOffset((o) => o + 1)}
+            style={{ ...navArrow, opacity: weekOffset < 0 ? 1 : 0.25 }}
+            disabled={weekOffset >= 0}
+            aria-label="次の週"
+          >
+            ›
+          </button>
+        </div>
+
+        <Card style={{ background: C.card2 }}>
+          <Label>🎯 この週の目標</Label>
+          <input
+            value={goal.text}
+            onChange={(ev) => setGoal((g) => ({ ...g, text: ev.target.value }))}
+            placeholder="例：面接で候補者の話を最後まで聴く"
+            style={inputStyle}
+          />
+          {goal.text.trim() && (
+            <button
+              onClick={() => setGoal((g) => ({ ...g, achieved: !g.achieved }))}
+              style={{
+                marginTop: 10,
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                background: goal.achieved ? "#E4EEDB" : "#FFFDF6",
+                border: `1px solid ${goal.achieved ? C.green : C.cardLine}`,
+                borderRadius: 10,
+                padding: "9px 12px",
+                cursor: "pointer",
+                fontFamily: BODY,
+                fontSize: 14,
+                color: goal.achieved ? C.greenDark : C.inkSoft,
+                fontWeight: 700,
+                width: "100%",
+                justifyContent: "center",
+              }}
+            >
+              {goal.achieved ? "達成できた！🎉" : "達成できたらタップ"}
+            </button>
+          )}
+          <div style={{ marginTop: 10 }}>
+            <button onClick={saveGoal} disabled={goalState === "saving"} style={{ ...saveBtnStyle(goalState), padding: "10px 0", fontSize: 14 }}>
+              {saveBtnText(goalState, "目標を保存する")}
+            </button>
+          </div>
+        </Card>
+
+        <Card>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+            <Label>習慣の達成</Label>
+            {scores.length > 0 && (
+              <div style={{ fontFamily: DISPLAY, fontSize: 24, fontWeight: 700, color: C.amberDark }}>
+                {pct}
+                <span style={{ fontSize: 13 }}>%</span>
+              </div>
+            )}
+          </div>
+          {!habits || habits.length === 0 ? (
+            <div style={{ color: C.inkSoft, fontSize: 14 }}>習慣が未設定です</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 4 }}>
+              <div style={{ display: "flex", alignItems: "center" }}>
+                <div style={{ flex: 1 }} />
+                {days.map((k) => (
+                  <div
+                    key={k}
+                    style={{
+                      width: 26,
+                      textAlign: "center",
+                      fontSize: 10,
+                      color: k === todayKey ? C.amberDark : C.inkSoft,
+                      fontWeight: k === todayKey ? 700 : 400,
+                    }}
+                  >
+                    {WD[fromKey(k).getDay()]}
+                  </div>
+                ))}
+              </div>
+              {dailyHabits.map((h) => dotRow(h))}
+              {weeklyHabits.length > 0 && (
+                <React.Fragment>
+                  <div style={{ fontSize: 11, color: C.inkSoft, fontWeight: 700, letterSpacing: "0.1em", marginTop: 2 }}>週の習慣</div>
+                  {weeklyHabits.map((h) => {
+                    let c = 0;
+                    days.forEach((k) => map[k] && map[k].habitChecks && map[k].habitChecks[h.id] && c++);
+                    const met = c >= (h.target || 1);
+                    return (
+                      <div key={h.id}>
+                        {dotRow(h)}
+                        <div style={{ textAlign: "right", fontSize: 12, fontWeight: 700, color: met ? C.greenDark : C.inkSoft, marginTop: 2 }}>
+                          {c}/{h.target || 1} {met ? "達成 ✓" : ""}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </React.Fragment>
+              )}
+            </div>
+          )}
+        </Card>
+
+        {photos.length > 0 && (
+          <Card>
+            <Label>この週の写真</Label>
+            <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4 }}>
+              {photos.map((k) => (
+                <div key={k} style={{ flexShrink: 0, width: 110 }}>
+                  <img src={map[k].photo} alt={fmtShort(k)} style={{ width: 110, height: 110, objectFit: "cover", borderRadius: 10, display: "block" }} />
+                  <div style={{ fontSize: 11, color: C.inkSoft, textAlign: "center", marginTop: 3 }}>
+                    {fmtShort(k)}（{WD[fromKey(k).getDay()]}）
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
+
+        <Card>
+          <Label>この週の記録</Label>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {days.map((k) => {
+              const e = map[k];
+              const has = e && (e.diary || e.promptAnswer || e.mood);
+              return (
+                <div key={k} style={{ borderLeft: `3px solid ${has ? C.amber : C.cardLine}`, paddingLeft: 10, opacity: k > todayKey ? 0.4 : 1 }}>
+                  <div style={{ fontSize: 12, color: C.inkSoft, fontWeight: 700 }}>
+                    {fmtShort(k)}（{WD[fromKey(k).getDay()]}）{e && e.mood ? ` ${e.mood}` : ""}
+                  </div>
+                  {has ? (
+                    <div style={{ fontSize: 14, lineHeight: 1.7, color: C.ink }}>
+                      {e.diary && <div>{e.diary}</div>}
+                      {e.promptAnswer && (
+                        <div style={{ color: C.inkSoft, fontSize: 13 }}>
+                          「{promptFor(k)}」→ {e.promptAnswer}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 13, color: "#C9C0AC" }}>記録なし</div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+
+        {weekThanks.length > 0 && (
+          <Card style={{ background: C.card2 }}>
+            <Label>🧡 この週のありがとう（{weekThanks.length}個）</Label>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {weekThanks.map((k) => (
+                <div key={k} style={{ fontSize: 14, lineHeight: 1.6, color: C.ink }}>
+                  <span style={{ color: C.plum, fontWeight: 700, fontSize: 12 }}>{fmtShort(k)}</span> {map[k].gratitude}
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
+
+        <Card>
+          <Label>週の振り返りメモ</Label>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div>
+              <div style={reviewLabel}>✨ できたこと・よかったこと</div>
+              <textarea value={review.wins} onChange={(ev) => setReview((r) => ({ ...r, wins: ev.target.value }))} rows={2} style={{ ...inputStyle, resize: "vertical", lineHeight: 1.7 }} />
+            </div>
+            <div>
+              <div style={reviewLabel}>🌱 人として気づいたこと</div>
+              <textarea value={review.insight} onChange={(ev) => setReview((r) => ({ ...r, insight: ev.target.value }))} rows={2} style={{ ...inputStyle, resize: "vertical", lineHeight: 1.7 }} />
+            </div>
+            <div>
+              <div style={reviewLabel}>🍜 来週の自分へ</div>
+              <textarea value={review.nextWeek} onChange={(ev) => setReview((r) => ({ ...r, nextWeek: ev.target.value }))} rows={2} style={{ ...inputStyle, resize: "vertical", lineHeight: 1.7 }} />
+            </div>
+            <button onClick={saveReview} disabled={reviewState === "saving"} style={saveBtnStyle(reviewState)}>
+              {saveBtnText(reviewState, "振り返りを保存する")}
+            </button>
+          </div>
+        </Card>
+      </div>
+    );
+  };
+
+  /* ---- ありがとう ---- */
+  const renderThanks = () => (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <div style={{ textAlign: "center", padding: "6px 0 2px" }}>
+        <div style={{ fontSize: 34 }}>🧡</div>
+        <div style={{ fontFamily: DISPLAY, fontSize: 20, color: C.textOnDark, fontWeight: 600 }}>たまったありがとう</div>
+        {gratitudeLog !== null && (
+          <div style={{ color: C.amber, fontFamily: DISPLAY, fontSize: 30, fontWeight: 700 }}>
+            {gratitudeLog.length}
+            <span style={{ fontSize: 14, color: C.mutedOnDark, fontFamily: BODY }}> 個</span>
+          </div>
+        )}
+      </div>
+
+      {gratitudeLog === null ? (
+        <Card>
+          <div style={{ color: C.inkSoft, textAlign: "center", padding: 12 }}>読み込み中…</div>
+        </Card>
+      ) : gratitudeLog.length === 0 ? (
+        <Card>
+          <div style={{ color: C.inkSoft, fontSize: 14, textAlign: "center", lineHeight: 1.8, padding: 8 }}>
+            まだ空っぽ。
+            <br />
+            「今日」タブでありがとうを書くと、ここに1枚ずつたまっていくよ。
+          </div>
+        </Card>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {gratitudeLog.map((g, i) => (
+            <div
+              key={g.date}
+              style={{
+                background: i % 2 === 0 ? C.card : C.card2,
+                border: `1px solid ${C.cardLine}`,
+                borderRadius: 4,
+                padding: "12px 14px",
+                transform: `rotate(${i % 2 === 0 ? -0.6 : 0.5}deg)`,
+                boxShadow: "0 2px 6px rgba(0,0,0,0.28)",
+                color: C.ink,
+              }}
+            >
+              <div style={{ fontSize: 11, color: C.plum, fontWeight: 700, marginBottom: 3 }}>{fmtLong(g.date)}</div>
+              <div style={{ fontSize: 14, lineHeight: 1.7 }}>{g.text}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  /* ---- やりたいこと ---- */
+  const renderWish = () => {
+    const active = (wishlist || []).filter((w) => !w.doneAt);
+    const done = (wishlist || []).filter((w) => w.doneAt).sort((a, b) => (a.doneAt < b.doneAt ? 1 : -1));
+
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ textAlign: "center", padding: "6px 0 2px" }}>
+          <div style={{ fontSize: 34 }}>🌈</div>
+          <div style={{ fontFamily: DISPLAY, fontSize: 20, color: C.textOnDark, fontWeight: 600 }}>やりたいこと貯金</div>
+          <div style={{ fontSize: 12, color: C.mutedOnDark, marginTop: 2 }}>思いついたらすぐ入れる。叶ったら「叶った！」</div>
+        </div>
+
+        <Card>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              value={newWish}
+              onChange={(e) => setNewWish(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && newWish.trim()) {
+                  saveWishlist([{ id: `w${Date.now()}`, text: newWish.trim(), createdAt: todayKey, doneAt: null }, ...(wishlist || [])]);
+                  setNewWish("");
+                }
+              }}
+              placeholder="例：糸島の酒蔵めぐり／ソムリエ3次試験…"
+              style={{ ...inputStyle, flex: 1 }}
+            />
+            <button
+              onClick={() => {
+                if (!newWish.trim()) return;
+                saveWishlist([{ id: `w${Date.now()}`, text: newWish.trim(), createdAt: todayKey, doneAt: null }, ...(wishlist || [])]);
+                setNewWish("");
+              }}
+              style={{
+                background: C.amber,
+                border: "none",
+                borderRadius: 10,
+                padding: "0 16px",
+                fontWeight: 700,
+                fontSize: 15,
+                color: "#2A2313",
+                fontFamily: BODY,
+                cursor: "pointer",
+                flexShrink: 0,
+              }}
+            >
+              追加
+            </button>
+          </div>
+        </Card>
+
+        {wishlist === null ? (
+          <Card>
+            <div style={{ color: C.inkSoft, textAlign: "center", padding: 12 }}>読み込み中…</div>
+          </Card>
+        ) : (
+          <React.Fragment>
+            <Card>
+              <Label>やりたいこと（{active.length}個）</Label>
+              {active.length === 0 ? (
+                <div style={{ color: "#C9C0AC", fontSize: 14, textAlign: "center", padding: 8 }}>まだ空っぽ。なんでも入れてOK🍜</div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {active.map((w) => (
+                    <div
+                      key={w.id}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        background: "#FFFDF6",
+                        border: `1px solid ${C.cardLine}`,
+                        borderRadius: 10,
+                        padding: "10px 12px",
+                      }}
+                    >
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 15, color: C.ink, lineHeight: 1.5 }}>{w.text}</div>
+                        <div style={{ fontSize: 10, color: C.inkSoft }}>{fmtShort(w.createdAt)} に追加</div>
+                      </div>
+                      <button
+                        onClick={() => saveWishlist(wishlist.map((x) => (x.id === w.id ? { ...x, doneAt: todayKey } : x)))}
+                        style={{
+                          background: "#E4EEDB",
+                          border: `1px solid ${C.green}`,
+                          borderRadius: 999,
+                          padding: "6px 10px",
+                          fontSize: 12,
+                          fontWeight: 700,
+                          color: C.greenDark,
+                          fontFamily: BODY,
+                          cursor: "pointer",
+                          flexShrink: 0,
+                        }}
+                      >
+                        叶った！
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (window.confirm(`「${w.text}」を削除する？`)) saveWishlist(wishlist.filter((x) => x.id !== w.id));
+                        }}
+                        style={{ background: "none", border: "none", color: C.inkSoft, fontSize: 14, cursor: "pointer", padding: 4 }}
+                        aria-label="削除"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+
+            {done.length > 0 && (
+              <Card style={{ background: C.card2 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                  <Label>🎉 叶ったこと</Label>
+                  <div style={{ fontFamily: DISPLAY, fontSize: 22, fontWeight: 700, color: C.greenDark }}>
+                    {done.length}
+                    <span style={{ fontSize: 12, fontFamily: BODY, color: C.inkSoft }}> 個</span>
+                  </div>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {done.map((w, i) => (
+                    <div
+                      key={w.id}
+                      style={{
+                        background: i % 2 === 0 ? "#FFFDF6" : C.card,
+                        border: `1px solid ${C.cardLine}`,
+                        borderRadius: 4,
+                        padding: "10px 12px",
+                        transform: `rotate(${i % 2 === 0 ? 0.5 : -0.5}deg)`,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                      }}
+                    >
+                      <span style={{ color: C.greenDark, fontWeight: 700 }}>✓</span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 14, color: C.ink, lineHeight: 1.5 }}>{w.text}</div>
+                        <div style={{ fontSize: 10, color: C.inkSoft }}>{fmtShort(w.doneAt)} に叶った</div>
+                      </div>
+                      <button
+                        onClick={() => saveWishlist(wishlist.map((x) => (x.id === w.id ? { ...x, doneAt: null } : x)))}
+                        style={{ background: "none", border: "none", color: C.inkSoft, fontSize: 11, cursor: "pointer", fontFamily: BODY }}
+                      >
+                        戻す
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            )}
+          </React.Fragment>
+        )}
+      </div>
+    );
+  };
+
+  /* ---- 習慣 ---- */
+  const renderHabits = () => {
+    const addHabit = () => {
+      if (!newHabit.trim()) return;
+      const h = { id: `h${Date.now()}`, name: newHabit.trim(), freq: newFreq };
+      if (newFreq === "weekly") h.target = newTarget;
+      saveHabits([...(habits || []), h]);
+      setNewHabit("");
+    };
+
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <Card>
+          <Label>続けたい習慣を追加</Label>
+          <div style={{ fontSize: 13, color: C.inkSoft, marginBottom: 10, lineHeight: 1.6 }}>
+            「毎日」か「週◯回」を選べるよ（例：読書＝毎日、サウナ＝週1、筋トレ＝週3）
+          </div>
+          <input
+            value={newHabit}
+            onChange={(e) => setNewHabit(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addHabit()}
+            placeholder="新しい習慣を入力"
+            style={{ ...inputStyle, marginBottom: 10 }}
+          />
+          <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
+            <button
+              onClick={() => setNewFreq("daily")}
+              style={{
+                flex: 1,
+                padding: "9px 0",
+                borderRadius: 10,
+                border: `2px solid ${newFreq === "daily" ? C.amber : C.cardLine}`,
+                background: newFreq === "daily" ? "#F0E4CB" : "#FFFDF6",
+                fontFamily: BODY,
+                fontSize: 14,
+                fontWeight: 700,
+                color: C.ink,
+                cursor: "pointer",
+              }}
+            >
+              毎日
+            </button>
+            <button
+              onClick={() => setNewFreq("weekly")}
+              style={{
+                flex: 1,
+                padding: "9px 0",
+                borderRadius: 10,
+                border: `2px solid ${newFreq === "weekly" ? C.amber : C.cardLine}`,
+                background: newFreq === "weekly" ? "#F0E4CB" : "#FFFDF6",
+                fontFamily: BODY,
+                fontSize: 14,
+                fontWeight: 700,
+                color: C.ink,
+                cursor: "pointer",
+              }}
+            >
+              週◯回
+            </button>
+          </div>
+          {newFreq === "weekly" && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, justifyContent: "center" }}>
+              <span style={{ fontSize: 14, color: C.inkSoft }}>週に</span>
+              {[1, 2, 3, 4, 5, 6].map((n) => (
+                <button
+                  key={n}
+                  onClick={() => setNewTarget(n)}
+                  style={{
+                    width: 34,
+                    height: 34,
+                    borderRadius: "50%",
+                    border: `2px solid ${newTarget === n ? C.amberDark : C.cardLine}`,
+                    background: newTarget === n ? C.amber : "#FFFDF6",
+                    color: newTarget === n ? "#fff" : C.ink,
+                    fontWeight: 700,
+                    fontFamily: BODY,
+                    fontSize: 14,
+                    cursor: "pointer",
+                  }}
+                >
+                  {n}
+                </button>
+              ))}
+              <span style={{ fontSize: 14, color: C.inkSoft }}>回</span>
+            </div>
+          )}
+          <button
+            onClick={addHabit}
+            style={{
+              background: C.amber,
+              border: "none",
+              borderRadius: 10,
+              padding: "11px 0",
+              width: "100%",
+              fontWeight: 700,
+              fontSize: 15,
+              color: "#2A2313",
+              fontFamily: BODY,
+              cursor: "pointer",
+            }}
+          >
+            追加する
+          </button>
+        </Card>
+
+        <Card>
+          <Label>いまの習慣</Label>
+          {habits === null ? (
+            <div style={{ color: C.inkSoft }}>読み込み中…</div>
+          ) : habits.length === 0 ? (
+            <div style={{ color: "#C9C0AC", fontSize: 14, textAlign: "center", padding: 8 }}>まだ習慣がありません</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {habits.map((h) => (
+                <div
+                  key={h.id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    background: "#FFFDF6",
+                    border: `1px solid ${C.cardLine}`,
+                    borderRadius: 10,
+                    padding: "10px 12px",
+                    gap: 8,
+                  }}
+                >
+                  <span style={{ fontSize: 15, color: C.ink, flex: 1 }}>{h.name}</span>
+                  <span
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 700,
+                      color: habitFreq(h) === "daily" ? C.amberDark : C.greenDark,
+                      background: habitFreq(h) === "daily" ? "#F5E7CC" : "#E4EEDB",
+                      borderRadius: 999,
+                      padding: "3px 9px",
+                      flexShrink: 0,
+                    }}
+                  >
+                    {habitFreq(h) === "daily" ? "毎日" : `週${h.target || 1}回`}
+                  </span>
+                  <button
+                    onClick={() => {
+                      if (window.confirm(`「${h.name}」を削除する？（過去のチェックは残ります）`)) {
+                        saveHabits(habits.filter((x) => x.id !== h.id));
+                      }
+                    }}
+                    style={{ background: "none", border: "none", color: C.inkSoft, fontSize: 13, cursor: "pointer", fontFamily: BODY, flexShrink: 0 }}
+                  >
+                    削除
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+
+        <div style={{ fontSize: 12, color: C.mutedOnDark, textAlign: "center", lineHeight: 1.8 }}>
+          データはこの端末のブラウザに保存されます。
+          <br />
+          写真は自動で軽くしてから保存するよ 📷
+        </div>
+      </div>
+    );
+  };
+
+  const TABS = [
+    { id: "today", label: "今日", icon: "🌙" },
+    { id: "week", label: "振り返り", icon: "📖" },
+    { id: "thanks", label: "ありがとう", icon: "🧡" },
+    { id: "wish", label: "やりたい", icon: "🌈" },
+    { id: "habits", label: "習慣", icon: "✅" },
+  ];
+
+  return (
+    <div style={{ minHeight: "100vh", background: C.bg, fontFamily: BODY }}>
+      <header
+        style={{
+          padding: "20px 20px 10px",
+          maxWidth: 480,
+          margin: "0 auto",
+          display: "flex",
+          alignItems: "baseline",
+          justifyContent: "space-between",
+        }}
+      >
+        <div>
+          <span style={{ fontFamily: DISPLAY, fontSize: 24, color: C.amber, fontWeight: 700 }}>ひとひ帳</span>
+          <span style={{ fontSize: 11, color: C.mutedOnDark, marginLeft: 10 }}>1日ひとひ、人としてのわたし</span>
+        </div>
+      </header>
+
+      <main style={{ maxWidth: 480, margin: "0 auto", padding: "8px 16px 96px" }}>
+        {tab === "today" && renderToday()}
+        {tab === "week" && renderWeek()}
+        {tab === "thanks" && renderThanks()}
+        {tab === "wish" && renderWish()}
+        {tab === "habits" && renderHabits()}
+      </main>
+
+      <nav
+        style={{
+          position: "fixed",
+          bottom: 0,
+          left: 0,
+          right: 0,
+          background: C.panel,
+          borderTop: `1px solid ${C.line}`,
+          padding: "8px 0 max(10px, env(safe-area-inset-bottom))",
+        }}
+      >
+        <div style={{ maxWidth: 480, margin: "0 auto", display: "flex" }}>
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              style={{ flex: 1, background: "none", border: "none", cursor: "pointer", padding: "4px 0", fontFamily: BODY }}
+            >
+              <div style={{ fontSize: 20, filter: tab === t.id ? "none" : "grayscale(1) opacity(0.55)" }}>{t.icon}</div>
+              <div style={{ fontSize: 10, fontWeight: tab === t.id ? 700 : 400, color: tab === t.id ? C.amber : C.mutedOnDark }}>{t.label}</div>
+            </button>
+          ))}
+        </div>
+      </nav>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<HitohiJournal />);
+</script>
+</body>
+</html>
