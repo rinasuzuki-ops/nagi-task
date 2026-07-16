@@ -222,7 +222,7 @@ function csvToTasks(text) {
   }).filter(Boolean);
 }
 
-const emptyData = { memos: [], tasks: [], members: [], meetings: [], tags: [], impGuide: DEFAULT_GUIDE };
+const emptyData = { memos: [], tasks: [], members: [], meetings: [], tags: [], impGuide: DEFAULT_GUIDE, reportNotes: [] };
 
 // ============ アプリ本体 ============
 function App() {
@@ -385,6 +385,7 @@ function App() {
     { key: "memo", label: "メモ", icon: "✏️" },
     { key: "tasks", label: "タスク", icon: "☑️" },
     { key: "meeting", label: "会議", icon: "🗣️" },
+    { key: "report", label: "報告", icon: "📝" },
     { key: "members", label: "メンバー", icon: "👥" },
   ];
 
@@ -420,6 +421,7 @@ function App() {
         {tab === "memo" && <MemoTab data={data} update={update} onMakeTask={function (memo) { setEditTask(newTaskTemplate({ title: memo.text, source: "memo", fromMemoId: memo.id })); }} />}
         {tab === "tasks" && <TaskTab data={data} toggleDone={toggleDone} onNew={function () { setEditTask(newTaskTemplate()); }} onEdit={function (t) { setEditTask(Object.assign({}, t)); }} onSchedule={function (t) { setScheduleTask(t); }} />}
         {tab === "meeting" && <MeetingTab data={data} update={update} showToast={showToast} />}
+        {tab === "report" && <ReportTab data={data} update={update} showToast={showToast} />}
         {tab === "members" && <MemberTab data={data} update={update} onEdit={function (t) { setEditTask(Object.assign({}, t)); }} toggleDone={toggleDone} onSchedule={function (t) { setScheduleTask(t); }} />}
       </main>
 
@@ -1177,6 +1179,179 @@ function MemberTab({ data, update, onEdit, toggleDone, onSchedule }) {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// ============ 報告タブ(週次報告) ============
+function ReportTab({ data, update, showToast }) {
+  const CATS = ["成果", "所感", "来週", "その他"];
+  const CAT_LABEL = { "成果": "① 成果", "所感": "② 所感", "来週": "③ 来週", "その他": "④ その他" };
+  const CAT_COLOR = { "成果": "#2E8B6F", "所感": "#B25AA2", "来週": "#3B5BA5", "その他": "#8A93A3" };
+
+  const [text, setText] = useState("");
+  const [cat, setCat] = useState("成果");
+  const [report, setReport] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
+  const inputRef = useRef(null);
+
+  const notes = data.reportNotes || [];
+  const active = notes.filter(function (n) { return !n.reportedAt; });
+  const archived = notes.filter(function (n) { return n.reportedAt; });
+
+  const addNote = function () {
+    const v = text.trim();
+    if (!v) return;
+    const n = { id: uid(), cat: cat, text: v, createdAt: new Date().toISOString(), reportedAt: null };
+    update(Object.assign({}, data, { reportNotes: [n].concat(notes) }));
+    setText("");
+    if (inputRef.current) inputRef.current.focus();
+  };
+  const delNote = function (id) {
+    update(Object.assign({}, data, { reportNotes: notes.filter(function (n) { return n.id !== id; }) }));
+  };
+
+  // 集計: 直近7日(今日含む) / 今後7日
+  const inLastWeek = function (s) { if (!s) return false; const n = daysUntil(String(s).slice(0, 10)); return n !== null && n <= 0 && n >= -6; };
+  const inNextWeek = function (s) { if (!s) return false; const n = daysUntil(s); return n !== null && n >= 0 && n <= 7; };
+
+  const doneThisWeek = data.tasks.filter(function (t) { return t.status === "done" && inLastWeek(t.doneAt); });
+  const meetingsThisWeek = data.meetings.filter(function (m) { return inLastWeek(m.date); });
+  const carryOver = data.tasks.filter(function (t) { return t.status !== "done" && t.due && daysUntil(t.due) < 0; });
+  const nextWeekTasks = data.tasks.filter(function (t) { return t.status !== "done" && t.due && inNextWeek(t.due); })
+    .sort(function (a, b) { return daysUntil(a.due) - daysUntil(b.due); });
+
+  const catNotes = function (c) { return active.filter(function (n) { return n.cat === c; }); };
+
+  const buildReport = function () {
+    const from = new Date(); from.setDate(from.getDate() - 6);
+    const who = function (t) { return t.assignee && t.assignee !== "自分" ? "(" + t.assignee + ")" : ""; };
+    const lines = [];
+    lines.push("【週次報告】" + fmtDate(dateToStr(from)) + "〜" + fmtDate(todayStr()));
+    lines.push("");
+    lines.push("■① 今週の成果・完了");
+    doneThisWeek.forEach(function (t) { lines.push("・" + t.title + who(t)); });
+    catNotes("成果").forEach(function (n) { lines.push("・" + n.text); });
+    if (meetingsThisWeek.length) lines.push("・実施した会議: " + meetingsThisWeek.map(function (m) { return m.title; }).join(" / "));
+    if (!doneThisWeek.length && !catNotes("成果").length && !meetingsThisWeek.length) lines.push("・(なし)");
+    lines.push("");
+    lines.push("■② 所感・気づき");
+    catNotes("所感").forEach(function (n) { lines.push("・" + n.text); });
+    if (!catNotes("所感").length) lines.push("・(なし)");
+    lines.push("");
+    lines.push("■③ 来週の優先事項");
+    nextWeekTasks.forEach(function (t) { lines.push("・" + fmtDate(t.due) + " " + t.title + "【" + t.importance + "】" + who(t)); });
+    catNotes("来週").forEach(function (n) { lines.push("・" + n.text); });
+    if (!nextWeekTasks.length && !catNotes("来週").length) lines.push("・(なし)");
+    lines.push("");
+    lines.push("■④ 持ち越し・懸念");
+    carryOver.forEach(function (t) { lines.push("・" + t.title + "(期限 " + fmtDate(t.due) + " 超過)"); });
+    catNotes("その他").forEach(function (n) { lines.push("・" + n.text); });
+    if (!carryOver.length && !catNotes("その他").length) lines.push("・(なし)");
+    setReport(lines.join("\n"));
+  };
+
+  const fallbackCopy = function (s) {
+    const ta = document.createElement("textarea");
+    ta.value = s; document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); } catch (e) { }
+    document.body.removeChild(ta);
+  };
+  const copyReport = function () {
+    const done = function () { showToast("コピーしました"); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(report).then(done).catch(function () { fallbackCopy(report); done(); });
+    } else { fallbackCopy(report); done(); }
+  };
+
+  const archiveNotes = function () {
+    if (!active.length) return;
+    if (!window.confirm("今週分のメモ(" + active.length + "件)を報告済みにして一覧から片付けます。よろしいですか?")) return;
+    const today = todayStr();
+    update(Object.assign({}, data, {
+      reportNotes: notes.map(function (n) { return n.reportedAt ? n : Object.assign({}, n, { reportedAt: today }); })
+    }));
+    showToast("報告済みにしました。来週もがんばろう!");
+  };
+
+  return (
+    <div>
+      <div className="card">
+        <div className="label mb2">気づいたら報告ネタをストック(木曜の週次報告用)</div>
+        <div className="wrap mb2">
+          {CATS.map(function (c) {
+            return (
+              <button key={c} className="chip" onClick={function () { setCat(c); }}
+                style={cat === c
+                  ? { background: CAT_COLOR[c], color: "#fff", padding: "5px 12px" }
+                  : { background: "var(--bg)", color: "var(--gray)", border: "1px solid var(--line)", padding: "5px 12px" }}>
+                {CAT_LABEL[c]}
+              </button>
+            );
+          })}
+        </div>
+        <div className="row">
+          <input ref={inputRef} className="input flex1" value={text}
+            onChange={function (e) { setText(e.target.value); }}
+            onKeyDown={function (e) { if (e.key === "Enter") addNote(); }}
+            placeholder="例: Web面接の通過率が改善した" />
+          <button className="btn btn-ink" onClick={addNote}>追加</button>
+        </div>
+      </div>
+
+      {active.length > 0 && (
+        <div className="stack mt3">
+          {active.map(function (n) {
+            return (
+              <div key={n.id} className="card row-start" style={{ padding: "10px 12px" }}>
+                <span className="chip" style={{ background: CAT_COLOR[n.cat] || "var(--gray)", color: "#fff", flexShrink: 0 }}>{n.cat}</span>
+                <div className="flex1" style={{ fontSize: "13px", wordBreak: "break-word" }}>
+                  {n.text}
+                  <span className="small muted"> — {new Date(n.createdAt).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" })}</span>
+                </div>
+                <button className="small muted" style={{ flexShrink: 0 }} onClick={function () { delNote(n.id); }}>削除</button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="card mt4">
+        <div className="label mb1">報告文を自動作成</div>
+        <div className="small muted mb2">
+          直近7日の実績から自動でまとめます: 完了 {doneThisWeek.length}件 / 会議 {meetingsThisWeek.length}件 / 来週期限 {nextWeekTasks.length}件 / 持ち越し {carryOver.length}件 + 上のメモ
+        </div>
+        <button className="btn btn-accent btn-block" onClick={buildReport}>📝 報告文を作る(①〜④形式)</button>
+        {report && (
+          <div className="mt3">
+            <textarea className="textarea input" rows={14} value={report} onChange={function (e) { setReport(e.target.value); }} style={{ fontSize: "12px" }} />
+            <div className="row mt2">
+              <button className="btn btn-ink flex1" onClick={copyReport}>📋 コピー</button>
+              <button className="btn btn-ghost flex1" onClick={archiveNotes}>✅ 報告済みにする</button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {archived.length > 0 && (
+        <div className="mt3">
+          <button className="small muted" onClick={function () { setShowArchived(!showArchived); }}>
+            {showArchived ? "▲ 過去の報告メモを隠す" : "▼ 過去の報告メモを見る(" + archived.length + "件)"}
+          </button>
+          {showArchived && (
+            <div className="stack mt2">
+              {archived.map(function (n) {
+                return (
+                  <div key={n.id} className="card row-start" style={{ padding: "8px 12px", opacity: .6 }}>
+                    <span className="chip" style={{ background: "var(--gray)", color: "#fff", flexShrink: 0 }}>{n.cat}</span>
+                    <div className="flex1 small" style={{ wordBreak: "break-word" }}>{n.text}<span className="muted"> — 報告済 {fmtDate(n.reportedAt)}</span></div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
