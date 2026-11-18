@@ -959,9 +959,21 @@ function calcDay(events, planned, set, nowMin) {
   return { items: items, free: free, outside: outside, allDay: allDay, meetingMin: meetingMin, freeMin: freeMin };
 }
 
-function DayTimeline({ events, planned, daySet, onDaySet, onEditTask, onPickSlot, connected, loading, error }) {
+function DayTimeline({ events, planned, viewDate, onChangeDate, daySet, onDaySet, onEditTask, onPickSlot, connected, loading, error }) {
   const [showSet, setShowSet] = useState(false);
-  const nowMin = nowMinutes();
+  const isToday = viewDate === todayStr();
+  const nowMin = isToday ? nowMinutes() : (viewDate < todayStr() ? 24 * 60 : 0);
+  const vd = new Date(viewDate + "T00:00:00");
+  const vYoubi = ["日","月","火","水","木","金","土"][vd.getDay()];
+  const dayBtn = function (label, d) {
+    const on = viewDate === d;
+    return (
+      <button key={label} className="chip bold" onClick={function () { onChangeDate(d); }}
+        style={on ? { background: "var(--ink)", color: "#fff", padding: "5px 12px" } : { background: "var(--bg)", color: "var(--ink-soft)", border: "1px solid var(--line)", padding: "5px 12px" }}>
+        {label}
+      </button>
+    );
+  };
   const d = calcDay(events, planned, daySet, nowMin);
   const ws = daySet.start * 60, we = daySet.end * 60;
   const PX = 0.8; // 1時間 = 48px
@@ -982,13 +994,20 @@ function DayTimeline({ events, planned, daySet, onDaySet, onEditTask, onPickSlot
     <div className="card mb4">
       <div className="row mb2" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
-          <div className="label" style={{ marginBottom: "2px" }}>今日のタイムライン</div>
+          <div className="label" style={{ marginBottom: "2px" }}>{isToday ? "今日" : fmtDate(viewDate) + "(" + vYoubi + ")"}のタイムライン</div>
           <div className="small">
             <span className="bold" style={{ color: "var(--ink-soft)" }}>予定 {fmtDur(d.meetingMin)}</span>
-            <span className="bold" style={{ color: "#2E8B6F", marginLeft: "10px" }}>これからの空き {fmtDur(d.freeMin)}</span>
+            <span className="bold" style={{ color: "#2E8B6F", marginLeft: "10px" }}>{isToday ? "これからの空き" : "空き"} {fmtDur(d.freeMin)}</span>
           </div>
         </div>
         <button className="small muted" onClick={function () { setShowSet(!showSet); }}>⚙ 表示設定</button>
+      </div>
+      <div className="row mb2" style={{ flexWrap: "wrap", gap: "6px" }}>
+        {dayBtn("今日", todayStr())}
+        {dayBtn("明日", tomorrowStr())}
+        {dayBtn("明後日", plusDaysStr(2))}
+        <input type="date" className="input" value={viewDate} onChange={function (e) { onChangeDate(e.target.value); }}
+          style={{ width: "auto", padding: "4px 8px", fontSize: "12px" }} />
       </div>
 
       {showSet && (
@@ -1082,7 +1101,7 @@ function DayTimeline({ events, planned, daySet, onDaySet, onEditTask, onPickSlot
               </div>
             );
           })}
-          {nowMin > ws && nowMin < we && (
+          {isToday && nowMin > ws && nowMin < we && (
             <React.Fragment>
               <div style={{ position: "absolute", top: 0, height: top(nowMin) + "px", left: 0, right: 0, background: "rgba(242,244,247,.55)", pointerEvents: "none", borderRadius: "4px" }} />
               <div style={{ position: "absolute", top: top(nowMin) + "px", left: "-6px", right: 0, height: "2px", background: "var(--accent)", pointerEvents: "none" }}>
@@ -1094,7 +1113,7 @@ function DayTimeline({ events, planned, daySet, onDaySet, onEditTask, onPickSlot
       </div>
 
       {d.outside.length > 0 && <div className="small muted mt2">勤務時間外: {d.outside.join(" / ")}</div>}
-      <div className="small muted mt1">緑の点線 = これからの空き時間(タップでタスクを入れられます)。個人の予定はタップで「空き扱い」にできます</div>
+      <div className="small muted mt1">緑の点線 = 空き時間(タップでタスクを入れられます)。個人の予定はタップで「空き扱い」にできます</div>
     </div>
   );
 }
@@ -1136,27 +1155,40 @@ function TodayTab({ data, toggleDone, onEdit, onSchedule, cloudCfg, showToast, o
   const [daySet, setDaySetState] = useState(loadDaySet());
   const [slot, setSlot] = useState(null);
   const setDaySet = function (s) { saveDaySet(s); setDaySetState(s); };
-  const [events, setEvents] = useState(null);
+  const [evByDate, setEvByDate] = useState({});
   const [evLoading, setEvLoading] = useState(false);
   const [evError, setEvError] = useState("");
 
   const today = todayStr();
+  const [viewDate, setViewDate] = useState(today);
   const youbi = ["日","月","火","水","木","金","土"][new Date().getDay()];
   const connected = cloudCfg && cloudCfg.url;
 
-  const loadCal = function () {
+  const loadCal = function (date) {
+    date = date || viewDate;
     if (!connected) return;
     setEvLoading(true); setEvError("");
-    fetch(cloudCfg.url + "?token=" + encodeURIComponent(cloudCfg.token) + "&action=calendar")
+    fetch(cloudCfg.url + "?token=" + encodeURIComponent(cloudCfg.token) + "&action=calendar&date=" + date)
       .then(function (r) { return r.json(); })
       .then(function (res) {
-        if (res && Array.isArray(res.events)) setEvents(res.events);
-        else setEvError("カレンダーを取得できませんでした。GASコードを最新版に貼り替えて「デプロイを管理→新バージョン」で更新し、権限を再承認してください。");
+        if (res && Array.isArray(res.events)) {
+          if (date !== today && res.date !== date) {
+            setEvError("明日以降の予定を読むには、GASコードを最新版に貼り替えて「新バージョン」でデプロイしてください(今は今日の予定しか取れません)");
+          } else {
+            setEvByDate(function (m) { const n = Object.assign({}, m); n[date] = res.events; return n; });
+          }
+        } else setEvError("カレンダーを取得できませんでした。GASコードを最新版に貼り替えて「デプロイを管理→新バージョン」で更新し、権限を再承認してください。");
         setEvLoading(false);
       })
       .catch(function () { setEvError("カレンダーの取得に失敗しました"); setEvLoading(false); });
   };
-  useEffect(function () { loadCal(); }, []);
+  useEffect(function () { loadCal(today); }, []);
+  const changeDate = function (d) {
+    if (!d) return;
+    setViewDate(d);
+    setEvError("");
+    if (!evByDate[d]) loadCal(d);
+  };
 
   const openTasks = data.tasks.filter(function (t) { return t.status !== "done"; });
   const plannedToday = openTasks.filter(function (t) { return t.planned && t.planned.date === today; });
@@ -1186,13 +1218,14 @@ function TodayTab({ data, toggleDone, onEdit, onSchedule, cloudCfg, showToast, o
     const push = function (list, why, color, prefix) {
       list.forEach(function (t) {
         if (!t || seen[t.id] || t.waiting || t.status === "done") return;
-        if (t.planned && t.planned.date === today) return;
+        if (t.planned && t.planned.date === viewDate) return;
         if (isBig(t, data.tasks) && childrenOf(data.tasks, t.id).length) return; // 分解済みの大物はステップで出す
         seen[t.id] = true;
         out.push({ t: t, why: why, color: color, prefix: prefix });
       });
     };
-    push(todayTasks, "今日まで・期限切れ", "var(--accent)");
+    if (viewDate === today) push(todayTasks, "今日まで・期限切れ", "var(--accent)");
+    else push(openTasks.filter(function (t) { return t.due && t.due <= viewDate && !t.waiting; }).sort(sortByDue), fmtDate(viewDate) + "までに必要", "var(--accent)");
     push(startSoon, "🔥 そろそろ着手", "#A65E00");
     push(bigs.map(function (b) { return b.info.next; }), "🏔 大物の次の一歩", "var(--ink)");
     push(bigs.filter(function (b) { return b.info.total === 0; }).map(function (b) { return b.t; }), "🏔 大物(分解する時間に)", "var(--ink)");
@@ -1208,7 +1241,9 @@ function TodayTab({ data, toggleDone, onEdit, onSchedule, cloudCfg, showToast, o
   }).sort(sortByDue);
   const freshTasks = data.tasks.filter(function (t) { return fresh && fresh[t.id]; });
 
-  const evList = events || [];
+  const evList = evByDate[today] || [];   // 日報・会議時間は今日の分
+  const viewEvents = evByDate[viewDate] || [];
+  const plannedView = openTasks.filter(function (t) { return t.planned && t.planned.date === viewDate; });
   const timeline = evList.map(function (e) { return { kind: "event", title: e.title, start: e.allDay ? "" : e.start, end: e.allDay ? "" : e.end, allDay: !!e.allDay }; })
     .concat(plannedToday.map(function (t) { return { kind: "task", title: t.title, start: t.planned.start, end: t.planned.end, task: t }; }))
     .sort(function (a, b) { return (a.allDay ? "00:00" : a.start || "99:99").localeCompare(b.allDay ? "00:00" : b.start || "99:99"); });
@@ -1257,11 +1292,11 @@ function TodayTab({ data, toggleDone, onEdit, onSchedule, cloudCfg, showToast, o
         <div className="bold xs" style={{ color: "var(--ink)", fontSize: "14px" }}>{fmtDate(today)}({youbi})</div>
         <div className="row">
           <button className="btn btn-ghost btn-sm" onClick={copyNippo}>📋 日報用にコピー</button>
-          {connected && <button className="btn btn-ink btn-sm" onClick={loadCal} disabled={evLoading}>{evLoading ? "↻ 取得中…" : "🔄 予定を更新"}</button>}
+          {connected && <button className="btn btn-ink btn-sm" onClick={function () { loadCal(viewDate); }} disabled={evLoading}>{evLoading ? "↻ 取得中…" : "🔄 予定を更新"}</button>}
         </div>
       </div>
 
-      <DayTimeline events={evList} planned={plannedToday} daySet={daySet} onDaySet={setDaySet}
+      <DayTimeline events={viewEvents} planned={plannedView} viewDate={viewDate} onChangeDate={changeDate} daySet={daySet} onDaySet={setDaySet}
         onEditTask={onEdit} onPickSlot={setSlot} connected={connected} loading={evLoading} error={evError} />
       {slot && (
         <SlotPickModal slot={slot} candidates={slotCandidates} allTags={data.tags}
@@ -1269,7 +1304,7 @@ function TodayTab({ data, toggleDone, onEdit, onSchedule, cloudCfg, showToast, o
           onPick={function (t) {
             const len = slot.e - slot.s;
             setSlot(null);
-            onSchedule(t, { date: today, start: toHM(slot.s), dur: len });
+            onSchedule(t, { date: viewDate, start: toHM(slot.s), dur: len });
           }} />
       )}
 
@@ -2183,7 +2218,7 @@ function TaskModal({ task, members, allTags, allTasks, impGuide, onSaveGuide, on
 
 // ============ いつやる?モーダル ============
 function ScheduleModal({ task, onPlanned, showToast, cloudCfg, onClose }) {
-  const [date, setDate] = useState((task.planned && task.planned.date) || todayStr());
+  const [date, setDate] = useState((task._init && task._init.date) || (task.planned && task.planned.date) || todayStr());
   const init = task._init || null;
   const [start, setStart] = useState((init && init.start) || (task.planned && task.planned.start) || "10:00");
   const [dur, setDur] = useState(function () {
