@@ -246,7 +246,7 @@ const sameItem = (key, a, b) => key === "tasks" ? normTask(a) === normTask(b) : 
 // 3者マージ: シートの最新(remote)に、この端末で変えた分(local と base の差)だけを重ねる
 function mergeCollections(base, local, remote) {
   const out = Object.assign({}, remote);
-  ["tasks", "memos", "members", "meetings", "reportNotes"].forEach(function (key) {
+  ["tasks", "memos", "questions", "members", "meetings", "reportNotes"].forEach(function (key) {
     const b = {}; (base[key] || []).forEach(function (x) { b[x.id] = x; });
     const l = {}; (local[key] || []).forEach(function (x) { l[x.id] = x; });
     let list = (remote[key] || []).slice();
@@ -363,7 +363,7 @@ function csvToTasks(text) {
   return list;
 }
 
-const emptyData = { memos: [], tasks: [], members: [], meetings: [], tags: [], tagColors: {}, impGuide: DEFAULT_GUIDE, reportNotes: [] };
+const emptyData = { memos: [], questions: [], tasks: [], members: [], meetings: [], tags: [], tagColors: {}, impGuide: DEFAULT_GUIDE, reportNotes: [] };
 
 // ============ アプリ本体 ============
 const AppCtx = React.createContext({ fresh: {}, tasks: [] });
@@ -745,7 +745,7 @@ function App() {
           <BigTab data={data} toggleDone={toggleDone} onEdit={openEdit} onAddSteps={addSteps} showToast={showToast}
             onNewBig={function () { setEditTask(newTaskTemplate({ effort: "大", importance: "高" })); }} />
         )}
-        {tab === "memo" && <MemoTab data={data} update={update} onMakeTask={function (memo) { setEditTask(newTaskTemplate({ title: memo.text, source: "memo", fromMemoId: memo.id })); }} />}
+        {tab === "memo" && <MemoTab data={data} update={update} showToast={showToast} onMakeTask={function (memo) { setEditTask(newTaskTemplate(memo.id ? { title: memo.text, source: "memo", fromMemoId: memo.id } : { title: memo.text })); }} />}
       </main>
 
       {editTask && (
@@ -1568,7 +1568,8 @@ function BigMini({ b, toggleDone, onEdit, onGoBig }) {
 }
 
 // ============ メモタブ ============
-function MemoTab({ data, update, onMakeTask }) {
+function MemoTab({ data, update, onMakeTask, showToast }) {
+  const [mode, setMode] = useState("memo");
   const [text, setText] = useState("");
   const inputRef = useRef(null);
 
@@ -1583,8 +1584,25 @@ function MemoTab({ data, update, onMakeTask }) {
     update(Object.assign({}, data, { memos: data.memos.filter(function (m) { return m.id !== id; }) }));
   };
 
+  const openQ = (data.questions || []).filter(function (q) { return !q.answeredAt; }).length;
+  const seg = (
+    <div className="row mb3" style={{ background: "#E6EAF1", borderRadius: "10px", padding: "3px" }}>
+      {[{ k: "memo", label: "✏️ メモ", n: data.memos.length }, { k: "ask", label: "💬 聞きたい", n: openQ }].map(function (o) {
+        const on = mode === o.k;
+        return (
+          <button key={o.k} className="flex1 bold" onClick={function () { setMode(o.k); }}
+            style={{ padding: "8px 0", borderRadius: "8px", fontSize: "13px", background: on ? "#fff" : "transparent", color: on ? "var(--ink)" : "var(--gray)", boxShadow: on ? "0 1px 3px rgba(20,28,48,.12)" : "none" }}>
+            {o.label}{o.n ? " " + o.n : ""}
+          </button>
+        );
+      })}
+    </div>
+  );
+  if (mode === "ask") return <div>{seg}<QuestionPanel data={data} update={update} onMakeTask={onMakeTask} showToast={showToast} /></div>;
+
   return (
     <div>
+      {seg}
       <div className="card">
         <div className="label mb2">気づいたら、すぐメモ</div>
         <div className="row">
@@ -1619,6 +1637,174 @@ function MemoTab({ data, update, onMakeTask }) {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// ============ 聞きたいことメモ ============
+const CLAUDE_WHO = "🤖 Claude";
+function QuestionPanel({ data, update, onMakeTask, showToast }) {
+  const qs = data.questions || [];
+  const open = qs.filter(function (q) { return !q.answeredAt; });
+  const done = qs.filter(function (q) { return q.answeredAt; })
+    .sort(function (a, b) { return (b.answeredAt || "") < (a.answeredAt || "") ? -1 : 1; });
+  // よく使う相手(最近の順)
+  const people = ["村上さん", "西谷さん", "生田さん"]; // いつもの相手は最初から
+  qs.slice().sort(function (a, b) { return (b.createdAt || "") < (a.createdAt || "") ? -1 : 1; })
+    .forEach(function (q) { if (q.who && q.who !== CLAUDE_WHO && people.indexOf(q.who) === -1) people.push(q.who); });
+
+  const [text, setText] = useState("");
+  const [who, setWho] = useState(qs.length ? (qs[0].who || CLAUDE_WHO) : CLAUDE_WHO);
+  const [newWho, setNewWho] = useState("");
+  const [addingWho, setAddingWho] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [answer, setAnswer] = useState("");
+  const [showDone, setShowDone] = useState(false);
+  const inputRef = useRef(null);
+
+  const save = function (list) { update(Object.assign({}, data, { questions: list })); };
+  const add = function () {
+    const v = text.trim();
+    if (!v) return;
+    const w = (addingWho && newWho.trim()) ? newWho.trim() : who;
+    save([{ id: uid(), text: v, who: w, createdAt: new Date().toISOString(), answeredAt: "", answer: "" }].concat(qs));
+    setText(""); setWho(w); setNewWho(""); setAddingWho(false);
+    if (inputRef.current) inputRef.current.focus();
+  };
+  const markDone = function (id) {
+    save(qs.map(function (q) { return q.id === id ? Object.assign({}, q, { answeredAt: todayStr(), answer: answer.trim() }) : q; }));
+    setEditing(null); setAnswer("");
+    showToast("聞けた!メモしておきました");
+  };
+  const reopen = function (id) { save(qs.map(function (q) { return q.id === id ? Object.assign({}, q, { answeredAt: "" }) : q; })); };
+  const del = function (id) { save(qs.filter(function (q) { return q.id !== id; })); };
+
+  const claudePrompt = function (items) {
+    return "壁打ちに付き合ってください。いきなり答えを出すのではなく、質問しながら一緒に考えを整理してほしいです。\n\n" +
+      "考えたいこと:\n" + items.map(function (q) { return "・" + q.text; }).join("\n") +
+      "\n\nまず" + (items.length > 1 ? "1つ目から、" : "") + "前提を確認する質問を1つずつしてください。";
+  };
+  const copyGroup = function (name, items) {
+    const s = name === CLAUDE_WHO
+      ? claudePrompt(items)
+      : "【" + name + "に聞きたいこと】\n" + items.map(function (q) { return "・" + q.text; }).join("\n");
+    copyText(s, function () { showToast(name === CLAUDE_WHO ? "壁打ち用の文をコピーしました。Claudeに貼ってください" : "コピーしました"); });
+  };
+
+  // 相手ごとにまとめる(Claude → 件数の多い順)
+  const groups = {};
+  open.forEach(function (q) { const k = q.who || "(相手未定)"; (groups[k] = groups[k] || []).push(q); });
+  const names = Object.keys(groups).sort(function (a, b) {
+    if (a === CLAUDE_WHO) return -1; if (b === CLAUDE_WHO) return 1;
+    return groups[b].length - groups[a].length;
+  });
+
+  const whoChip = function (name) {
+    const on = !addingWho && who === name;
+    return (
+      <button key={name} className="chip bold" onClick={function () { setWho(name); setAddingWho(false); }}
+        style={on ? { background: "var(--ink)", color: "#fff", padding: "5px 11px" } : { background: "var(--bg)", color: "var(--ink-soft)", border: "1px solid var(--line)", padding: "5px 11px" }}>
+        {name}
+      </button>
+    );
+  };
+
+  return (
+    <div>
+      <div className="card">
+        <div className="label mb2">聞きたいこと・考えたいことをメモ</div>
+        <div className="row">
+          <input ref={inputRef} className="input flex1" value={text}
+            onChange={function (e) { setText(e.target.value); }}
+            onKeyDown={function (e) { if (e.key === "Enter" && !e.isComposing) add(); }}
+            placeholder="例: 2号の処遇、どこまで上げる?" />
+          <button className="btn btn-ink" onClick={add}>追加</button>
+        </div>
+        <div className="small muted mt2 mb1">誰に聞く?</div>
+        <div className="wrap">
+          {whoChip(CLAUDE_WHO)}
+          {people.slice(0, 10).map(whoChip)}
+          <button className="chip bold" onClick={function () { setAddingWho(true); }}
+            style={addingWho ? { background: "var(--ink)", color: "#fff", padding: "5px 11px" } : { background: "#fff", color: "var(--gray)", border: "1px dashed var(--line)", padding: "5px 11px" }}>
+            ＋ ほかの人
+          </button>
+        </div>
+        {addingWho && (
+          <input className="input mt2" value={newWho} onChange={function (e) { setNewWho(e.target.value); }} placeholder="例: 村上さん / 西谷さん / 幹部塾" />
+        )}
+      </div>
+
+      {open.length === 0 && (
+        <div className="center muted xs" style={{ padding: "32px 0", lineHeight: 1.8 }}>
+          聞きたいことはまだありません。<br />「これ誰かに聞きたい」「Claudeと壁打ちしたい」と思ったら、ここに置いておこう。
+        </div>
+      )}
+
+      {names.map(function (name) {
+        const items = groups[name];
+        const isClaude = name === CLAUDE_WHO;
+        return (
+          <div key={name} className="mt4">
+            <div className="row mb2" style={{ justifyContent: "space-between" }}>
+              <div className="label" style={{ marginBottom: 0, color: isClaude ? "#3B5BA5" : "var(--ink)" }}>{isClaude ? "🤖 Claudeと壁打ち" : "💬 " + name + "に聞く"}({items.length})</div>
+              <button className="btn btn-ghost btn-sm" onClick={function () { copyGroup(name, items); }}>
+                {isClaude ? "📋 壁打ち用にコピー" : "📋 まとめてコピー"}
+              </button>
+            </div>
+            <div className="stack">
+              {items.map(function (q) {
+                return (
+                  <div key={q.id} className="card" style={{ padding: "10px 12px", borderLeft: "4px solid " + (isClaude ? "#3B5BA5" : "#C97B2D") }}>
+                    <div style={{ fontSize: "13px", wordBreak: "break-word" }}>{q.text}</div>
+                    <div className="small muted mt1">{q.createdAt ? fmtDate(day10(q.createdAt)) + " にメモ" : ""}</div>
+                    {editing === q.id ? (
+                      <div className="mt2">
+                        <textarea className="textarea input" rows={2} value={answer} onChange={function (e) { setAnswer(e.target.value); }} placeholder="わかったこと・答えをひとことメモ(空欄でもOK)" />
+                        <div className="row mt2">
+                          <button className="btn btn-ink btn-sm flex1" onClick={function () { markDone(q.id); }}>✓ 聞けたにする</button>
+                          <button className="btn btn-ghost btn-sm" onClick={function () { setEditing(null); setAnswer(""); }}>キャンセル</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="row mt2" style={{ flexWrap: "wrap" }}>
+                        <button className="btn btn-ghost btn-sm" onClick={function () { setEditing(q.id); setAnswer(q.answer || ""); }}>✓ 聞けた</button>
+                        {isClaude && <button className="btn btn-ghost btn-sm" onClick={function () { copyText(claudePrompt([q]), function () { showToast("壁打ち用の文をコピーしました"); }); }}>📋 これだけコピー</button>}
+                        <button className="btn btn-ghost btn-sm" onClick={function () { onMakeTask({ id: "", text: q.text }); }}>→ タスクにする</button>
+                        <button className="small muted" style={{ marginLeft: "auto" }} onClick={function () { if (window.confirm("このメモを削除しますか?")) del(q.id); }}>削除</button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+
+      {done.length > 0 && (
+        <div className="mt4">
+          <button className="small bold muted" onClick={function () { setShowDone(!showDone); }}>
+            {showDone ? "▲ 聞けたことを隠す" : "▼ 聞けたこと(" + done.length + "件)"}
+          </button>
+          {showDone && (
+            <div className="stack mt2">
+              {done.map(function (q) {
+                return (
+                  <div key={q.id} className="card" style={{ padding: "9px 12px", opacity: .75 }}>
+                    <div className="small muted">{q.who} ・ {fmtDate(q.answeredAt)} に聞けた</div>
+                    <div style={{ fontSize: "13px", wordBreak: "break-word" }}>{q.text}</div>
+                    {q.answer && <div className="small mt1" style={{ background: "var(--bg)", borderRadius: "6px", padding: "6px 8px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>💡 {q.answer}</div>}
+                    <div className="row mt1">
+                      <button className="small muted" onClick={function () { reopen(q.id); }}>未解決に戻す</button>
+                      <button className="small muted" style={{ marginLeft: "auto" }} onClick={function () { if (window.confirm("削除しますか?")) del(q.id); }}>削除</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
