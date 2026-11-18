@@ -107,9 +107,11 @@ const daysUntil = (s) => {
 };
 const dateToStr = (d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
 const tomorrowStr = () => { const d = new Date(); d.setDate(d.getDate() + 1); return dateToStr(d); };
+const thisFridayStr = () => { const d = new Date(); d.setDate(d.getDate() + (5 - d.getDay() + 7) % 7); return dateToStr(d); };
+const nextMondayStr = () => { const d = new Date(); d.setDate(d.getDate() + (((1 - d.getDay() + 7) % 7) || 7)); return dateToStr(d); };
 const QuickDateChips = ({ value, onPick }) => (
-  <div className="row mt1">
-    {[{ label: "今日", v: todayStr() }, { label: "明日", v: tomorrowStr() }].map(function (o) {
+  <div className="row mt1" style={{ flexWrap: "wrap", gap: "6px" }}>
+    {[{ label: "今日", v: todayStr() }, { label: "明日", v: tomorrowStr() }, { label: "金曜", v: thisFridayStr() }, { label: "来週月", v: nextMondayStr() }].map(function (o) {
       return (
         <button key={o.label} className="chip" onClick={function () { onPick(o.v); }}
           style={value === o.v
@@ -149,6 +151,32 @@ const shouldStart = (t) => {
   return daysUntil(startBy(t)) <= 0;
 };
 
+// ===== 大物タスク(ステップ分解) =====
+const day10 = (s) => (s ? String(s).slice(0, 10) : "");
+const childrenOf = (tasks, id) => tasks.filter(function (x) { return x.parentId === id; });
+const sortSteps = (steps, tasks) => steps.slice().sort(function (a, b) {
+  const da = a.due || "9999-99-99", db = b.due || "9999-99-99";
+  if (da !== db) return da < db ? -1 : 1;
+  return tasks.indexOf(a) - tasks.indexOf(b);
+});
+const isBig = (t, tasks) => !t.parentId && (t.effort === "大" || tasks.some(function (x) { return x.parentId === t.id; }));
+const bigInfo = (t, tasks) => {
+  const steps = sortSteps(childrenOf(tasks, t.id), tasks);
+  const done = steps.filter(function (s) { return s.status === "done"; });
+  const next = steps.find(function (s) { return s.status !== "done"; }) || null;
+  const marks = [day10(t.createdAt)]
+    .concat(steps.map(function (s) { return day10(s.createdAt); }))
+    .concat(done.map(function (s) { return day10(s.doneAt); }))
+    .filter(Boolean).sort();
+  const last = marks.length ? marks[marks.length - 1] : "";
+  const idle = last ? -daysUntil(last) : null;
+  return { steps: steps, doneCount: done.length, total: steps.length, next: next, idle: idle };
+};
+const sortByDue = (a, b) => {
+  const da = a.due || "9999-99-99", db = b.due || "9999-99-99";
+  return da < db ? -1 : da > db ? 1 : 0;
+};
+
 const copyText = (s, done) => {
   const fb = function () {
     const ta = document.createElement("textarea");
@@ -171,7 +199,19 @@ const dueInfo = (due, status) => {
   if (n <= 3) return { label: fmtDate(due) + " あと" + n + "日", bg: "#FCF0D8", fg: "#A66E00" };
   return { label: fmtDate(due), bg: "#EEF0F4", fg: "#5A6577" };
 };
-const tagColor = (name, allTags) => TAG_COLORS[Math.max(0, allTags.indexOf(name)) % TAG_COLORS.length];
+let TAG_CUSTOM = {}; // App が毎回 data.tagColors を入れる
+const tagColor = (name, allTags) => TAG_CUSTOM[name] || TAG_COLORS[Math.max(0, allTags.indexOf(name)) % TAG_COLORS.length];
+const TAG_PALETTE = ["#3B5BA5","#4A8FB5","#2E8B6F","#7A9A3A","#C9A227","#C97B2D","#D8402B","#C2447A","#B25AA2","#8A5AB2","#5A7D9A","#6B6F78"];
+const MODE_LABEL = { quick: "⚡ すぐできる", ai: "🤖 AIでいける", daily: "🐢 毎日少しずつ", block: "🧱 時間をとる" };
+const MODE_STYLE = {
+  quick: { background: "#E4F0EA", color: "#2E6B50" },
+  ai: { background: "#E3EAF8", color: "#3B5BA5" },
+  daily: { background: "#EAF4F1", color: "#2C7A6B" },
+  block: { background: "#FDF1E2", color: "#9A5B12" },
+};
+const isWaiting = (t) => t.status !== "done" && !!t.waiting;
+const waitDays = (t) => (t.waitSince ? -daysUntil(day10(t.waitSince)) : null);
+const plusDaysStr = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return dateToStr(d); };
 
 // ===== ローカル保存(この端末のブラウザ内) =====
 const store = {
@@ -189,8 +229,50 @@ const cloud = {
 function cloudGet(cfg) {
   return fetch(cfg.url + "?token=" + encodeURIComponent(cfg.token)).then(function (r) { return r.json(); });
 }
-function cloudPost(cfg, data) {
-  return fetch(cfg.url, { method: "POST", body: JSON.stringify({ token: cfg.token, data: data }) }).then(function (r) { return r.json(); });
+function cloudPost(cfg, data, baseRev) {
+  return fetch(cfg.url, { method: "POST", body: JSON.stringify({ token: cfg.token, data: data, baseRev: baseRev || "" }) }).then(function (r) { return r.json(); });
+}
+
+// ===== シートとの差分・マージ =====
+// シートに保存される項目だけで比較(表記ゆれで「更新あり」と誤判定しないため)
+const normTask = (t) => JSON.stringify([
+  t.id, t.title || "", t.status === "done" ? "done" : "open", t.due || "", t.importance || "中",
+  t.requester || "", (t.tags || []).join(";"), t.repeat || "",
+  t.planned ? [t.planned.date, t.planned.start, t.planned.end || ""].join("|") : "",
+  t.note || "", t.doneAt || "", t.effort || "中", (t.repeatDays || []).join(","), t.parentId || "",
+  t.waiting ? 1 : 0, t.waitFor || "", t.waitSince || "", t.remindAt || "", t.mode || "", t.touchedAt || "",
+]);
+const sameItem = (key, a, b) => key === "tasks" ? normTask(a) === normTask(b) : JSON.stringify(a) === JSON.stringify(b);
+// 3者マージ: シートの最新(remote)に、この端末で変えた分(local と base の差)だけを重ねる
+function mergeCollections(base, local, remote) {
+  const out = Object.assign({}, remote);
+  ["tasks", "memos", "members", "meetings", "reportNotes"].forEach(function (key) {
+    const b = {}; (base[key] || []).forEach(function (x) { b[x.id] = x; });
+    const l = {}; (local[key] || []).forEach(function (x) { l[x.id] = x; });
+    let list = (remote[key] || []).slice();
+    Object.keys(b).forEach(function (id) { if (!l[id]) list = list.filter(function (x) { return x.id !== id; }); });
+    (local[key] || []).forEach(function (x) {
+      const bx = b[x.id];
+      if (!bx || !sameItem(key, x, bx)) {
+        const i = list.findIndex(function (y) { return y.id === x.id; });
+        if (i >= 0) list[i] = x; else list.push(x);
+      }
+    });
+    out[key] = list;
+  });
+  ["tags", "impGuide", "tagColors"].forEach(function (k) {
+    if (JSON.stringify(local[k]) !== JSON.stringify(base[k])) out[k] = local[k];
+  });
+  return out;
+}
+function diffTasks(oldTasks, newTasks) {
+  const o = {}; (oldTasks || []).forEach(function (t) { o[t.id] = t; });
+  const fresh = {};
+  (newTasks || []).forEach(function (t) {
+    if (!o[t.id]) fresh[t.id] = "new";
+    else if (normTask(o[t.id]) !== normTask(t)) fresh[t.id] = "upd";
+  });
+  return fresh;
 }
 
 // ===== ファイル出力/読み込み =====
@@ -209,14 +291,16 @@ function csvEscape(v) {
   if (/[",\n\r]/.test(v)) v = '"' + v.replace(/"/g, '""') + '"';
   return v;
 }
-const CSV_HEAD = ["タスク名","状態","期限","重要度","担当者","依頼元","タグ","繰り返し","実行予定日","開始","終了","メモ","作成日","完了日"];
+const CSV_HEAD = ["タスク名","状態","期限","重要度","担当者","依頼元","タグ","繰り返し","実行予定日","開始","終了","メモ","作成日","完了日","かかる量","親タスク"];
 function tasksToCsv(tasks) {
+  const titleOf = {}; tasks.forEach(function (t) { titleOf[t.id] = t.title; });
   const rows = tasks.map(function (t) {
     return [
-      t.title, t.status === "done" ? "完了" : "未完了", t.due || "", t.importance || "",
+      t.title, t.status === "done" ? "完了" : (t.waiting ? "相手待ち" : "未完了"), t.due || "", t.importance || "",
       t.assignee || "", t.requester || "", (t.tags || []).join(";"), t.repeat || "",
       t.planned ? t.planned.date : "", t.planned ? t.planned.start : "", t.planned ? t.planned.end : "",
       t.note || "", t.createdAt || "", t.doneAt || "",
+      t.effort || "中", t.parentId ? (titleOf[t.parentId] || "") : "",
     ];
   });
   return "\uFEFF" + [CSV_HEAD].concat(rows).map(function (r) { return r.map(csvEscape).join(","); }).join("\r\n");
@@ -248,13 +332,14 @@ function csvToTasks(text) {
   const iTitle = idx("タスク名");
   if (iTitle === -1) return null; // ヘッダー不一致
   const get = function (r, name) { const i = idx(name); return i === -1 ? "" : (r[i] || "").trim(); };
-  return rows.slice(1).map(function (r) {
+  const list = rows.slice(1).map(function (r) {
     const title = (r[iTitle] || "").trim();
     if (!title) return null;
     const pd = get(r, "実行予定日"), ps = get(r, "開始"), pe = get(r, "終了");
     return {
       id: uid(), title: title,
       status: get(r, "状態") === "完了" ? "done" : "open",
+      waiting: get(r, "状態") === "相手待ち",
       due: get(r, "期限"),
       importance: ["高","中","低"].indexOf(get(r, "重要度")) >= 0 ? get(r, "重要度") : "中",
       assignee: get(r, "担当者") || "自分",
@@ -265,14 +350,24 @@ function csvToTasks(text) {
       note: get(r, "メモ"),
       createdAt: get(r, "作成日") || todayStr(),
       doneAt: get(r, "完了日") || null,
+      effort: ["小","中","大"].indexOf(get(r, "かかる量")) >= 0 ? get(r, "かかる量") : "中",
+      parentTitle: get(r, "親タスク"),
       source: "import",
     };
   }).filter(Boolean);
+  list.forEach(function (t) {
+    const p = t.parentTitle ? list.find(function (x) { return x.title === t.parentTitle && x !== t; }) : null;
+    t.parentId = p ? p.id : "";
+    delete t.parentTitle;
+  });
+  return list;
 }
 
-const emptyData = { memos: [], tasks: [], members: [], meetings: [], tags: [], impGuide: DEFAULT_GUIDE, reportNotes: [] };
+const emptyData = { memos: [], tasks: [], members: [], meetings: [], tags: [], tagColors: {}, impGuide: DEFAULT_GUIDE, reportNotes: [] };
 
 // ============ アプリ本体 ============
+const AppCtx = React.createContext({ fresh: {}, tasks: [] });
+
 function App() {
   const [data, setData] = useState(function () {
     const saved = store.load();
@@ -285,80 +380,256 @@ function App() {
   const [toast, setToast] = useState("");
   const [cloudCfg, setCloudCfg] = useState(cloud.load());
   const [sync, setSync] = useState(cloud.load().url ? "loading" : "off");
-  const saveTimer = useRef(null);
+  const [lastPulled, setLastPulled] = useState("");
+  const [fresh, setFresh] = useState({});
 
+  const saveTimer = useRef(null);
+  const toastTimer = useRef(null);
+  const dataRef = useRef(data);
+  const baseRef = useRef(data);     // 最後にシートと一致していた状態
+  const revRef = useRef("");        // そのときのシートの版
+  const cfgRef = useRef(cloudCfg);
+  const pendingRef = useRef(false); // 保存待ち・保存中
+  const lastPullAtRef = useRef(0);
+  dataRef.current = data;
+  cfgRef.current = cloudCfg;
+  TAG_CUSTOM = data.tagColors || {};
+
+  const showToast = function (msg) {
+    setToast(msg);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(function () { setToast(""); }, 2800);
+  };
+  const nowHM = function () {
+    const d = new Date();
+    return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+  };
   const mergeRemote = function (remote) {
     const m = Object.assign({}, emptyData, remote);
+    delete m.rev;
     if (!m.impGuide) m.impGuide = DEFAULT_GUIDE;
     return m;
   };
-
-  useEffect(function () {
-    if (!cloudCfg.url) return;
-    cloudGet(cloudCfg).then(function (remote) {
-      if (remote && Array.isArray(remote.tasks)) {
-        const merged = mergeRemote(remote);
-        setData(merged);
-        if (store.ok) store.save(merged);
-        setSync("ok");
-      } else setSync("error");
-    }).catch(function () { setSync("error"); });
-  }, []);
-
-  const update = function (next) {
+  const commitLocal = function (next) {
+    dataRef.current = next;
     setData(next);
     if (store.ok) store.save(next);
-    if (cloudCfg.url) {
-      setSync("saving");
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-      saveTimer.current = setTimeout(function () {
-        cloudPost(cloudCfg, next).then(function (res) {
-          setSync(res && res.ok ? "ok" : "error");
-        }).catch(function () { setSync("error"); });
-      }, 1200);
-    }
   };
-  const showToast = function (msg) {
-    setToast(msg);
-    setTimeout(function () { setToast(""); }, 2400);
+  const markFresh = function (diff) {
+    const keys = Object.keys(diff);
+    if (!keys.length) return { n: 0, u: 0 };
+    setFresh(function (f) { return Object.assign({}, f, diff); });
+    return {
+      n: keys.filter(function (k) { return diff[k] === "new"; }).length,
+      u: keys.filter(function (k) { return diff[k] === "upd"; }).length,
+    };
   };
+
+  // シートの内容をアプリに反映(何が増えた・変わったかも記録)
+  const applyRemote = function (remote, opts) {
+    opts = opts || {};
+    const merged = mergeRemote(remote);
+    const prev = dataRef.current;
+    const c = opts.noDiff ? { n: 0, u: 0 } : markFresh(diffTasks(prev.tasks, merged.tasks));
+    commitLocal(merged);
+    baseRef.current = merged;
+    revRef.current = remote.rev || "";
+    lastPullAtRef.current = Date.now();
+    setLastPulled(nowHM());
+    setSync("ok");
+    if (c.n || c.u) showToast("シートから読み込み: " + (c.n ? "新規" + c.n + "件 " : "") + (c.u ? "更新" + c.u + "件" : ""));
+    else if (opts.toast) showToast(opts.toast);
+  };
+
+  const pullCloud = function (opts) {
+    opts = opts || {};
+    const cfg = cfgRef.current;
+    if (!cfg.url) return;
+    if (pendingRef.current) { if (!opts.silent) showToast("保存中です。少し待ってからもう一度どうぞ"); return; }
+    setSync("loading");
+    lastPullAtRef.current = Date.now();
+    cloudGet(cfg).then(function (remote) {
+      if (remote && Array.isArray(remote.tasks)) {
+        if (pendingRef.current) { setSync("saving"); return; } // 読込中に編集が入ったら、その保存を優先
+        applyRemote(remote, { toast: opts.silent ? "" : "最新の状態です", noDiff: opts.noDiff });
+      } else { setSync("error"); if (!opts.silent) showToast("読み込みに失敗しました"); }
+    }).catch(function () { setSync("error"); if (!opts.silent) showToast("読み込みに失敗しました"); });
+  };
+
+  // シートへ保存。別の場所(Claude・シート直接編集)で更新されていたら、取り込んでから保存し直す
+  const pushData = function (payload, force, depth) {
+    depth = depth || 0;
+    const cfg = cfgRef.current;
+    pendingRef.current = true;
+    setSync("saving");
+    return cloudPost(cfg, payload, force ? "" : revRef.current).then(function (res) {
+      if (res && res.ok) {
+        baseRef.current = payload;
+        revRef.current = res.rev || "";
+        pendingRef.current = !!saveTimer.current;
+        setSync(saveTimer.current ? "saving" : "ok");
+        return res;
+      }
+      if (res && res.conflict && res.data) {
+        const remote = mergeRemote(res.data);
+        const local = dataRef.current;
+        const merged = mergeRemote(mergeCollections(baseRef.current, local, remote));
+        const c = markFresh(diffTasks(local.tasks, merged.tasks));
+        commitLocal(merged);
+        baseRef.current = remote;
+        revRef.current = res.data.rev || "";
+        showToast("シートの更新を取り込んで保存しました" + (c.n ? "(新規" + c.n + "件)" : ""));
+        return pushData(merged, depth >= 1, depth + 1);
+      }
+      pendingRef.current = false;
+      setSync("error");
+      return res;
+    }).catch(function () { pendingRef.current = false; setSync("error"); });
+  };
+
+  const update = function (next) {
+    commitLocal(next);
+    if (!cfgRef.current.url) return;
+    pendingRef.current = true;
+    setSync("saving");
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(function () {
+      saveTimer.current = null;
+      pushData(dataRef.current, false);
+    }, 1200);
+  };
+
+  // 起動時+アプリに戻ってきた時に、シートを自動で読み込み直す
+  useEffect(function () {
+    if (cfgRef.current.url) pullCloud({ silent: true, noDiff: dataRef.current.tasks.length === 0 });
+    const onBack = function () {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - lastPullAtRef.current < 15000) return;
+      pullCloud({ silent: true });
+    };
+    document.addEventListener("visibilitychange", onBack);
+    window.addEventListener("focus", onBack);
+    return function () {
+      document.removeEventListener("visibilitychange", onBack);
+      window.removeEventListener("focus", onBack);
+    };
+  }, []);
+
+  // ---- タスク操作 ----
+  const patchTasks = function (fn) {
+    const d = dataRef.current;
+    update(Object.assign({}, d, { tasks: fn(d.tasks) }));
+  };
+  const markDone = function (t) { return Object.assign({}, t, { status: "done", doneAt: todayStr() }); };
 
   const saveTask = function (task, newTags) {
     newTags = newTags || [];
-    const exists = data.tasks.some(function (t) { return t.id === task.id; });
-    const tasks = exists ? data.tasks.map(function (t) { return t.id === task.id ? task : t; }) : data.tasks.concat([task]);
-    const memos = task.fromMemoId ? data.memos.filter(function (m) { return m.id !== task.fromMemoId; }) : data.memos;
-    const tags = data.tags.slice();
+    const d = dataRef.current;
+    const exists = d.tasks.some(function (t) { return t.id === task.id; });
+    const tasks = exists ? d.tasks.map(function (t) { return t.id === task.id ? task : t; }) : d.tasks.concat([task]);
+    const memos = task.fromMemoId ? d.memos.filter(function (m) { return m.id !== task.fromMemoId; }) : d.memos;
+    const tags = d.tags.slice();
     newTags.forEach(function (n) { if (tags.indexOf(n) === -1) tags.push(n); });
-    update(Object.assign({}, data, { tasks: tasks, memos: memos, tags: tags }));
+    update(Object.assign({}, d, { tasks: tasks, memos: memos, tags: tags }));
     setEditTask(null);
     showToast(exists ? "タスクを更新しました" : "タスクを追加しました");
   };
-  const saveGuide = function (text) { update(Object.assign({}, data, { impGuide: text })); };
+  const saveGuide = function (text) { update(Object.assign({}, dataRef.current, { impGuide: text })); };
+
   const toggleDone = function (id) {
-    const target = data.tasks.find(function (t) { return t.id === id; });
+    const d = dataRef.current;
+    const target = d.tasks.find(function (t) { return t.id === id; });
     if (!target) return;
-    let tasks = data.tasks.map(function (t) {
+    const nowDone = target.status !== "done";
+    let tasks = d.tasks.map(function (t) {
       return t.id === id
-        ? Object.assign({}, t, { status: t.status === "done" ? "open" : "done", doneAt: t.status === "done" ? null : todayStr() })
+        ? Object.assign({}, t, { status: nowDone ? "done" : "open", doneAt: nowDone ? todayStr() : null }, nowDone ? { waiting: false } : {})
         : t;
     });
-    if (target.status !== "done" && target.repeat) {
+    let msg = "";
+    if (nowDone && target.repeat) {
       const base = target.due || todayStr();
-      tasks = tasks.concat([Object.assign({}, target, { id: uid(), status: "open", doneAt: null, planned: null, due: nextDue(base, target.repeat, target.repeatDays), createdAt: todayStr() })]);
-      showToast("完了!次回(" + target.repeat + ")分を作成しました");
+      tasks = tasks.concat([Object.assign({}, target, { id: uid(), status: "open", doneAt: null, planned: null, waiting: false, waitFor: "", waitSince: "", remindAt: "", due: nextDue(base, target.repeat, target.repeatDays), createdAt: todayStr() })]);
+      msg = "完了!次回(" + target.repeat + ")分を作成しました";
     }
-    update(Object.assign({}, data, { tasks: tasks }));
+    // 大物を完了 → 残りのステップもまとめて?
+    if (nowDone && !target.parentId) {
+      const openSteps = tasks.filter(function (t) { return t.parentId === id && t.status !== "done"; });
+      if (openSteps.length && window.confirm("未完了のステップが" + openSteps.length + "件あります。ステップもまとめて完了にしますか?")) {
+        tasks = tasks.map(function (t) { return t.parentId === id && t.status !== "done" ? markDone(t) : t; });
+      }
+    }
+    // 最後のステップを完了 → 大物も完了?
+    if (nowDone && target.parentId) {
+      const parent = tasks.find(function (t) { return t.id === target.parentId; });
+      const sibs = tasks.filter(function (t) { return t.parentId === target.parentId; });
+      if (parent && parent.status !== "done" && sibs.every(function (s) { return s.status === "done"; })) {
+        if (window.confirm("🎉 全ステップ完了!\n「" + parent.title + "」も完了にしますか?")) {
+          tasks = tasks.map(function (t) { return t.id === parent.id ? markDone(t) : t; });
+        }
+      } else if (parent) {
+        const left = sibs.filter(function (s) { return s.status !== "done"; }).length;
+        msg = "ナイス!「" + parent.title + "」残り" + left + "ステップ";
+      }
+    }
+    update(Object.assign({}, d, { tasks: tasks }));
+    if (msg) showToast(msg);
   };
+
   const deleteTask = function (id) {
-    update(Object.assign({}, data, { tasks: data.tasks.filter(function (t) { return t.id !== id; }) }));
+    const d = dataRef.current;
+    const kids = d.tasks.filter(function (t) { return t.parentId === id; });
+    if (kids.length && !window.confirm("このタスクのステップ" + kids.length + "件もまとめて削除します。よろしいですか?")) return;
+    update(Object.assign({}, d, { tasks: d.tasks.filter(function (t) { return t.id !== id && t.parentId !== id; }) }));
     setEditTask(null);
     showToast("タスクを削除しました");
   };
   const setPlanned = function (taskId, planned) {
-    update(Object.assign({}, data, { tasks: data.tasks.map(function (t) { return t.id === taskId ? Object.assign({}, t, { planned: planned }) : t; }) }));
+    patchTasks(function (tasks) { return tasks.map(function (t) { return t.id === taskId ? Object.assign({}, t, { planned: planned }) : t; }); });
+  };
+  const patchTask = function (taskId, fields, msg) {
+    patchTasks(function (tasks) { return tasks.map(function (t) { return t.id === taskId ? Object.assign({}, t, fields) : t; }); });
+    if (msg) showToast(msg);
+  };
+  const deleteTag = function (name) {
+    const d = dataRef.current;
+    const tc = Object.assign({}, d.tagColors || {});
+    delete tc[name];
+    update(Object.assign({}, d, {
+      tags: d.tags.filter(function (x) { return x !== name; }),
+      tagColors: tc,
+      tasks: d.tasks.map(function (t) {
+        return (t.tags || []).indexOf(name) >= 0 ? Object.assign({}, t, { tags: t.tags.filter(function (x) { return x !== name; }) }) : t;
+      }),
+    }));
+    showToast("タグ「" + name + "」を削除しました");
+  };
+  const setTagColor = function (name, color) {
+    const d = dataRef.current;
+    const tc = Object.assign({}, d.tagColors || {});
+    if (color) tc[name] = color; else delete tc[name];
+    update(Object.assign({}, d, { tagColors: tc }));
+  };
+  const setDue = function (taskId, due) {
+    patchTasks(function (tasks) { return tasks.map(function (t) { return t.id === taskId ? Object.assign({}, t, { due: due }) : t; }); });
+    showToast("期限を " + fmtDate(due) + " にしました");
+  };
+  const addSteps = function (parentId, titles, due) {
+    const d = dataRef.current;
+    const parent = d.tasks.find(function (t) { return t.id === parentId; });
+    if (!parent) return;
+    const steps = titles.map(function (title) {
+      return {
+        id: uid(), title: title, note: "", due: due || "", importance: parent.importance || "中", assignee: "自分",
+        requester: "", tags: (parent.tags || []).slice(), repeat: "", repeatDays: [], effort: "小",
+        planned: null, status: "open", source: "step", parentId: parentId, createdAt: todayStr(),
+      };
+    });
+    update(Object.assign({}, d, { tasks: d.tasks.concat(steps) }));
+    showToast(steps.length + "ステップ追加しました");
   };
 
+  // ---- シート接続 ----
   const connectCloud = function (cfg) {
     setSync("loading");
     showToast("接続しています…");
@@ -369,50 +640,32 @@ function App() {
         return;
       }
       cloud.save(cfg);
+      cfgRef.current = cfg;
       setCloudCfg(cfg);
+      const local = dataRef.current;
       const remoteHas = remote.tasks.length > 0 || (remote.memos || []).length > 0;
-      const localHas = data.tasks.length > 0 || data.memos.length > 0;
+      const localHas = local.tasks.length > 0 || local.memos.length > 0;
       if (!remoteHas && localHas) {
-        cloudPost(cfg, data).then(function () { setSync("ok"); showToast("この端末のデータをシートに書き込みました"); }).catch(function () { setSync("error"); });
-      } else if (remoteHas && localHas) {
-        if (window.confirm("スプレッドシート側に既にデータがあります。\nOK: シートのデータをこの端末に読み込む(推奨)\nキャンセル: この端末のデータでシートを上書き")) {
-          const merged = mergeRemote(remote);
-          setData(merged); if (store.ok) store.save(merged);
-          setSync("ok"); showToast("シートのデータを読み込みました");
-        } else {
-          cloudPost(cfg, data).then(function () { setSync("ok"); showToast("この端末のデータで上書きしました"); }).catch(function () { setSync("error"); });
-        }
+        pushData(local, true).then(function () { showToast("この端末のデータをシートに書き込みました"); });
+      } else if (remoteHas && localHas && !window.confirm("スプレッドシート側に既にデータがあります。\nOK: シートのデータをこの端末に読み込む(推奨)\nキャンセル: この端末のデータでシートを上書き")) {
+        pushData(local, true).then(function () { showToast("この端末のデータで上書きしました"); });
       } else {
-        const merged = mergeRemote(remote);
-        setData(merged); if (store.ok) store.save(merged);
-        setSync("ok"); showToast("接続しました");
+        applyRemote(remote, { toast: "接続しました", noDiff: true });
       }
     }).catch(function () {
       setSync("error");
       window.alert("接続に失敗しました。URL・合言葉と、デプロイの「アクセスできるユーザー: 全員」設定を確認してください。");
     });
   };
-  const pullCloud = function () {
-    if (!cloudCfg.url) return;
-    setSync("loading");
-    cloudGet(cloudCfg).then(function (remote) {
-      if (remote && Array.isArray(remote.tasks)) {
-        const merged = mergeRemote(remote);
-        setData(merged); if (store.ok) store.save(merged);
-        setSync("ok"); showToast("スプレッドシートから読み込みました");
-      } else { setSync("error"); showToast("読み込みに失敗しました"); }
-    }).catch(function () { setSync("error"); showToast("読み込みに失敗しました"); });
-  };
   const pushNow = function () {
-    if (!cloudCfg.url) return;
-    setSync("saving");
-    cloudPost(cloudCfg, data).then(function (res) {
-      setSync(res && res.ok ? "ok" : "error");
+    if (!cfgRef.current.url) return;
+    pushData(dataRef.current, true).then(function (res) {
       showToast(res && res.ok ? "スプレッドシートに書き込みました" : "書き込みに失敗しました");
-    }).catch(function () { setSync("error"); showToast("書き込みに失敗しました"); });
+    });
   };
   const disconnectCloud = function () {
     cloud.save({ url: "", token: "" });
+    cfgRef.current = { url: "", token: "" };
     setCloudCfg({ url: "", token: "" });
     setSync("off");
     showToast("接続を解除しました(データは端末とシートに残ります)");
@@ -423,37 +676,45 @@ function App() {
 
   const newTaskTemplate = function (extra) {
     return Object.assign({
-      id: uid(), title: "", note: "", due: "", importance: "中", assignee: "自分",
+      id: uid(), title: "", note: "", due: "", importance: "中", assignee: "自分", parentId: "",
+      waiting: false, waitFor: "", waitSince: "", remindAt: "", mode: "",
       requester: "", tags: [], repeat: "", repeatDays: [], effort: "中", planned: null, status: "open", source: "direct", createdAt: todayStr(),
     }, extra || {});
   };
+  const openEdit = function (t) { setEditTask(Object.assign({}, t)); };
 
   const NAV = [
     { key: "today", label: "今日", icon: "📆" },
-    { key: "memo", label: "メモ", icon: "✏️" },
     { key: "tasks", label: "タスク", icon: "☑️" },
-    { key: "meeting", label: "会議", icon: "🗣️" },
-    { key: "report", label: "報告", icon: "📝" },
+    { key: "big", label: "大物", icon: "🏔" },
+    { key: "memo", label: "メモ", icon: "✏️" },
   ];
 
+  const syncLabel = sync === "off" ? "☁️ 未接続"
+    : sync === "loading" ? "↻ 読込中…"
+    : sync === "saving" ? "↻ 保存中…"
+    : sync === "error" ? "⚠️ 再読込"
+    : "🔄 " + (lastPulled ? lastPulled + " 読込" : "同期済");
+
   return (
+    <AppCtx.Provider value={{ fresh: fresh, tasks: data.tasks }}>
     <div style={{ minHeight: "100vh" }}>
       <header className="app-header">
         <div className="container header-inner">
           <div>
             <div className="bold" style={{ fontSize: "15px", letterSpacing: ".04em" }}>凪タスク帳</div>
-            <div className="small" style={{ opacity: .7 }}>メモから始まるタスク管理</div>
+            <div className="small" style={{ opacity: .7 }}>
+              未完了 <b>{openCount}</b>{overdueCount > 0 && <span className="bold" style={{ color: "#FFB4A6" }}> ・期限切れ {overdueCount}</span>}
+            </div>
           </div>
           <div className="row">
-            <div className="small" style={{ textAlign: "right", lineHeight: 1.3 }}>
-              <div><span className="bold" style={{ fontSize: "16px" }}>{openCount}</span> 未完了</div>
-              {overdueCount > 0 && <div className="bold" style={{ color: "#FFB4A6" }}>期限切れ {overdueCount}</div>}
-            </div>
-            <span className="small" style={{ opacity: .9 }}>
-              {sync === "off" ? "☁️ 未接続" : sync === "loading" ? "↻ 読込中" : sync === "saving" ? "↻ 同期中" : sync === "ok" ? "✓ 同期済" : "⚠️ エラー"}
-            </span>
-            <button onClick={function () { setShowData(true); }} title="データの出力・読み込み"
-              style={{ fontSize: "20px", padding: "4px 2px 4px 8px" }}>💾</button>
+            <button className="small" title="シートから読み込み直す"
+              onClick={function () { if (cfgRef.current.url) pullCloud({}); else setShowData(true); }}
+              style={{ color: "#fff", background: sync === "error" ? "rgba(216,64,43,.55)" : "rgba(255,255,255,.14)", borderRadius: "999px", padding: "5px 11px", whiteSpace: "nowrap" }}>
+              {syncLabel}
+            </button>
+            <button onClick={function () { setShowData(true); }} title="データ・連携の設定"
+              style={{ fontSize: "20px", padding: "4px 2px 4px 4px" }}>💾</button>
           </div>
         </div>
       </header>
@@ -464,15 +725,22 @@ function App() {
             ⚠️ この環境では自動保存できません(プレビュー画面など)。ファイルをダウンロードしてブラウザで開くと、この端末に自動保存されます。
           </div>
         )}
-        {tab === "today" && <TodayTab data={data} toggleDone={toggleDone} cloudCfg={cloudCfg} showToast={showToast} onEdit={function (t) { setEditTask(Object.assign({}, t)); }} onSchedule={function (t) { setScheduleTask(t); }} />}
+        {tab === "today" && (
+          <TodayTab data={data} toggleDone={toggleDone} cloudCfg={cloudCfg} showToast={showToast}
+            onEdit={openEdit} onSchedule={setScheduleTask} onSetDue={setDue} onPatch={patchTask}
+            onGoBig={function () { setTab("big"); }}
+            fresh={fresh} onClearFresh={function () { setFresh({}); }} />
+        )}
+        {tab === "tasks" && <TaskTab data={data} toggleDone={toggleDone} onNew={function () { setEditTask(newTaskTemplate()); }} onEdit={openEdit} onSchedule={setScheduleTask} onSetTagColor={setTagColor} onDeleteTag={deleteTag} />}
+        {tab === "big" && (
+          <BigTab data={data} toggleDone={toggleDone} onEdit={openEdit} onAddSteps={addSteps} showToast={showToast}
+            onNewBig={function () { setEditTask(newTaskTemplate({ effort: "大", importance: "高" })); }} />
+        )}
         {tab === "memo" && <MemoTab data={data} update={update} onMakeTask={function (memo) { setEditTask(newTaskTemplate({ title: memo.text, source: "memo", fromMemoId: memo.id })); }} />}
-        {tab === "tasks" && <TaskTab data={data} toggleDone={toggleDone} onNew={function () { setEditTask(newTaskTemplate()); }} onEdit={function (t) { setEditTask(Object.assign({}, t)); }} onSchedule={function (t) { setScheduleTask(t); }} />}
-        {tab === "meeting" && <MeetingTab data={data} update={update} showToast={showToast} />}
-        {tab === "report" && <ReportTab data={data} update={update} showToast={showToast} />}
       </main>
 
       {editTask && (
-        <TaskModal task={editTask} members={data.members} allTags={data.tags}
+        <TaskModal task={editTask} members={data.members} allTags={data.tags} allTasks={data.tasks}
           impGuide={data.impGuide || DEFAULT_GUIDE} onSaveGuide={saveGuide}
           onSave={saveTask} onDelete={deleteTask} onClose={function () { setEditTask(null); }} />
       )}
@@ -481,11 +749,11 @@ function App() {
       )}
       {showData && (
         <DataModal data={data} update={update} showToast={showToast} onClose={function () { setShowData(false); }}
-          cloudCfg={cloudCfg} sync={sync} onConnect={connectCloud} onPull={pullCloud} onPush={pushNow} onDisconnect={disconnectCloud} />
+          cloudCfg={cloudCfg} sync={sync} onConnect={connectCloud} onPull={function () { pullCloud({}); }} onPush={pushNow} onDisconnect={disconnectCloud} />
       )}
 
       {toast && (
-        <div style={{ position: "fixed", left: "50%", transform: "translateX(-50%)", bottom: "96px", zIndex: 60, background: "var(--ink)", color: "#fff", fontSize: "13px", padding: "8px 16px", borderRadius: "999px", whiteSpace: "nowrap", boxShadow: "0 4px 12px rgba(20,28,48,.3)" }}>
+        <div style={{ position: "fixed", left: "50%", transform: "translateX(-50%)", bottom: "96px", zIndex: 60, background: "var(--ink)", color: "#fff", fontSize: "13px", padding: "8px 16px", borderRadius: "999px", maxWidth: "92vw", textAlign: "center", boxShadow: "0 4px 12px rgba(20,28,48,.3)" }}>
           {toast}
         </div>
       )}
@@ -503,6 +771,7 @@ function App() {
         </div>
       </nav>
     </div>
+    </AppCtx.Provider>
   );
 }
 
@@ -567,7 +836,7 @@ function DataModal({ data, update, showToast, onClose, cloudCfg, sync, onConnect
         {cloudCfg.url ? (
           <div className="mb4">
             <div className="small muted mb2">
-              接続中({sync === "ok" ? "✓ 同期済み" : sync === "saving" || sync === "loading" ? "↻ 同期中…" : "⚠️ エラーあり"})。PC・スマホ・部下の端末も同じURLと合言葉で接続すれば、全員で同じデータを使えます。
+              接続中({sync === "ok" ? "✓ 同期済み" : sync === "saving" || sync === "loading" ? "↻ 同期中…" : "⚠️ エラーあり"})。アプリを開いた時・アプリに戻ってきた時に、シートの最新(Claudeが追加した分も)を自動で読み込みます。
             </div>
             <div className="row mb2">
               <button className="btn btn-ghost btn-sm flex1" onClick={onPull}>⬇ シートから読み込み直す</button>
@@ -618,7 +887,8 @@ function DataModal({ data, update, showToast, onClose, cloudCfg, sync, onConnect
 }
 
 // ============ 今日タブ ============
-function TodayTab({ data, toggleDone, onEdit, onSchedule, cloudCfg, showToast }) {
+function TodayTab({ data, toggleDone, onEdit, onSchedule, cloudCfg, showToast, onSetDue, onPatch, onGoBig, fresh, onClearFresh }) {
+  const [showAllUndated, setShowAllUndated] = useState(false);
   const [events, setEvents] = useState(null);
   const [evLoading, setEvLoading] = useState(false);
   const [evError, setEvError] = useState("");
@@ -646,10 +916,29 @@ function TodayTab({ data, toggleDone, onEdit, onSchedule, cloudCfg, showToast })
   const dueTasks = openTasks.filter(function (t) { return t.due && daysUntil(t.due) <= 0; });
   const ids = {};
   dueTasks.concat(plannedToday).forEach(function (t) { ids[t.id] = true; });
-  const todayTasks = openTasks.filter(function (t) { return ids[t.id]; })
+  const todayTasks = openTasks.filter(function (t) { return ids[t.id] && !t.waiting; })
     .sort(function (a, b) { return (a.due ? daysUntil(a.due) : 9999) - (b.due ? daysUntil(b.due) : 9999); });
-  const startSoon = openTasks.filter(function (t) { return !ids[t.id] && shouldStart(t); })
+  const startSoon = openTasks.filter(function (t) { return !ids[t.id] && !t.waiting && !isBig(t, data.tasks) && shouldStart(t); })
     .sort(function (a, b) { return daysUntil(a.due) - daysUntil(b.due); });
+  const bigs = openTasks.filter(function (t) { return isBig(t, data.tasks); })
+    .sort(sortByDue)
+    .map(function (t) { return { t: t, info: bigInfo(t, data.tasks) }; });
+  const undated = openTasks.filter(function (t) { return !t.due && !t.parentId && !t.repeat && !t.waiting; });
+  const waitingList = openTasks.filter(function (t) { return t.waiting; }).sort(function (a, b) {
+    const ra = a.remindAt || "9999-99-99", rb = b.remindAt || "9999-99-99";
+    return ra < rb ? -1 : ra > rb ? 1 : 0;
+  });
+  const remindNow = waitingList.filter(function (t) { return t.remindAt && daysUntil(t.remindAt) <= 0; }).length;
+  const shownIds = {};
+  todayTasks.concat(startSoon).forEach(function (t) { shownIds[t.id] = true; });
+  const quickList = openTasks.filter(function (t) { return (t.mode === "quick" || t.mode === "ai") && !t.waiting && !shownIds[t.id]; })
+    .sort(function (a, b) { return a.mode === b.mode ? sortByDue(a, b) : (a.mode === "quick" ? -1 : 1); });
+  const dailyAll = openTasks.filter(function (t) { return t.mode === "daily" && !t.waiting; }).sort(sortByDue);
+  const dailyDone = dailyAll.filter(function (t) { return t.touchedAt === today; }).length;
+  const blockList = openTasks.filter(function (t) {
+    return t.mode === "block" && !t.waiting && !(t.planned && t.planned.date && daysUntil(t.planned.date) >= 0);
+  }).sort(sortByDue);
+  const freshTasks = data.tasks.filter(function (t) { return fresh && fresh[t.id]; });
 
   const evList = events || [];
   const timeline = evList.map(function (e) { return { kind: "event", title: e.title, start: e.allDay ? "" : e.start, end: e.allDay ? "" : e.end, allDay: !!e.allDay }; })
@@ -672,6 +961,17 @@ function TodayTab({ data, toggleDone, onEdit, onSchedule, cloudCfg, showToast })
     doneToday.forEach(function (t) { lines.push("・" + t.title); });
     if (!doneToday.length) lines.push("・(なし)");
     lines.push("");
+    if (waitingList.length) {
+      lines.push("■相手待ち(" + waitingList.length + "件)");
+      waitingList.forEach(function (t) { lines.push("・" + t.title + (t.waitFor ? "(" + t.waitFor + "待ち)" : "")); });
+      lines.push("");
+    }
+    const touched = data.tasks.filter(function (t) { return t.touchedAt === today && t.status !== "done"; });
+    if (touched.length) {
+      lines.push("■少しずつ進めたもの");
+      touched.forEach(function (t) { lines.push("・" + t.title); });
+      lines.push("");
+    }
     lines.push("■実行予定・進行中");
     plannedToday.forEach(function (t) { lines.push("・" + t.planned.start + "〜 " + t.title); });
     todayTasks.filter(function (t) { return !(t.planned && t.planned.date === today); }).forEach(function (t) { lines.push("・" + t.title + (t.due ? "(期限 " + fmtDate(t.due) + ")" : "")); });
@@ -687,6 +987,20 @@ function TodayTab({ data, toggleDone, onEdit, onSchedule, cloudCfg, showToast })
           {connected && <button className="btn btn-ink btn-sm" onClick={loadCal} disabled={evLoading}>{evLoading ? "↻ 取得中…" : "🔄 予定を更新"}</button>}
         </div>
       </div>
+
+      {freshTasks.length > 0 && (
+        <div className="card mb4" style={{ border: "2px solid #3B5BA5" }}>
+          <div className="row mb2" style={{ justifyContent: "space-between" }}>
+            <div className="label" style={{ marginBottom: 0, color: "#3B5BA5" }}>🆕 シートから届いた変更({freshTasks.length}件)</div>
+            <button className="btn btn-ghost btn-sm" onClick={onClearFresh}>確認OK</button>
+          </div>
+          <div className="stack">
+            {freshTasks.map(function (t) {
+              return <TaskCard key={t.id} t={t} allTags={data.tags} toggleDone={toggleDone} onEdit={onEdit} onSchedule={onSchedule} />;
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="card mb4">
         <div className="row mb2" style={{ justifyContent: "space-between" }}>
@@ -716,8 +1030,62 @@ function TodayTab({ data, toggleDone, onEdit, onSchedule, cloudCfg, showToast })
         </div>
       </div>
 
+      <div className="label mb2">今日やるタスク({todayTasks.length}件) — 期限切れ・今日期限・今日に予定したもの</div>
+      <div className="stack">
+        {todayTasks.length === 0 && <div className="center muted xs" style={{ padding: "24px 0" }}>今日期限のタスクはありません 🍺</div>}
+        {todayTasks.map(function (t) {
+          return <TaskCard key={t.id} t={t} allTags={data.tags} toggleDone={toggleDone} onEdit={onEdit} onSchedule={onSchedule} />;
+        })}
+      </div>
+
+      {waitingList.length > 0 && (
+        <div className="mt4">
+          <div className="label mb1" style={{ color: "#6B4E8A" }}>
+            ⏳ 相手待ち({waitingList.length}件){remindNow > 0 && <span style={{ color: "var(--accent)" }}> ・📣 催促どき {remindNow}件</span>}
+          </div>
+          <div className="small muted mb2">ボールは相手。返ってきたら「戻ってきた」で自分のタスクに戻します</div>
+          <div className="stack">
+            {waitingList.map(function (t) {
+              const wd = waitDays(t);
+              const due = t.remindAt ? daysUntil(t.remindAt) : null;
+              const hot = due !== null && due <= 0;
+              return (
+                <div key={t.id} className="card" style={{ padding: "10px 12px", borderLeft: "4px solid #8A5AB2", background: hot ? "#FFF6F4" : "#fff" }}>
+                  <div style={{ fontSize: "13px", cursor: "pointer", wordBreak: "break-word" }} onClick={function () { onEdit(t); }}>{t.title}</div>
+                  <div className="wrap mt1">
+                    <span className="chip" style={{ background: "#F1EAF6", color: "#6B4E8A" }}>⏳ {t.waitFor ? t.waitFor + "待ち" : "相手待ち"}{wd !== null ? "・" + (wd <= 0 ? "今日から" : wd + "日目") : ""}</span>
+                    {t.remindAt && <span className="chip bold" style={hot ? { background: "#FBE3DF", color: "var(--accent)" } : { background: "var(--bg)", color: "var(--ink-soft)" }}>📣 {hot ? "催促どき(" + fmtDate(t.remindAt) + ")" : fmtDate(t.remindAt) + " に催促"}</span>}
+                    {t.due && <span className="chip" style={{ background: dueInfo(t.due, "open").bg, color: dueInfo(t.due, "open").fg }}>{dueInfo(t.due, "open").label}</span>}
+                  </div>
+                  <div className="row mt2">
+                    <button className="btn btn-ghost btn-sm flex1" onClick={function () { onPatch(t.id, { waiting: false, waitSince: "", remindAt: "" }, "自分ボールに戻しました"); }}>📥 戻ってきた</button>
+                    <button className="btn btn-ghost btn-sm flex1" onClick={function () { onPatch(t.id, { remindAt: plusDaysStr(3) }, "催促済み。次は " + fmtDate(plusDaysStr(3)) + " に確認します"); }}>📣 催促した(+3日)</button>
+                    <button className="btn btn-ghost btn-sm" onClick={function () { toggleDone(t.id); }}>✓ 完了</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      <div className="mt4">
+        <div className="row mb2" style={{ justifyContent: "space-between" }}>
+          <div className="label" style={{ marginBottom: 0, color: "var(--ink)" }}>🏔 大物の次の一歩({bigs.length}件)</div>
+          <button className="small bold" style={{ color: "var(--ink-soft)" }} onClick={onGoBig}>大物タブへ →</button>
+        </div>
+        {bigs.length === 0 && (
+          <div className="small muted" style={{ padding: "4px 0 8px" }}>時間がかかるタスクは「かかる量: 大」にすると、ここで毎日見張ります</div>
+        )}
+        <div className="stack">
+          {bigs.map(function (b) {
+            return <BigMini key={b.t.id} b={b} toggleDone={toggleDone} onEdit={onEdit} onGoBig={onGoBig} />;
+          })}
+        </div>
+      </div>
+
       {startSoon.length > 0 && (
-        <div className="mb4">
+        <div className="mt4">
           <div className="label mb2" style={{ color: "#A65E00" }}>🔥 そろそろ着手(期限はまだ先だけど、かかる量的に今日始めたい)</div>
           <div className="stack">
             {startSoon.map(function (t) {
@@ -727,13 +1095,115 @@ function TodayTab({ data, toggleDone, onEdit, onSchedule, cloudCfg, showToast })
         </div>
       )}
 
-      <div className="label mb2">今日やるタスク({todayTasks.length}件) — 期限切れ・今日期限・今日に予定したもの</div>
-      <div className="stack">
-        {todayTasks.length === 0 && <div className="center muted xs" style={{ padding: "24px 0" }}>今日期限のタスクはありません 🍺</div>}
-        {todayTasks.map(function (t) {
-          return <TaskCard key={t.id} t={t} allTags={data.tags} toggleDone={toggleDone} onEdit={onEdit} onSchedule={onSchedule} />;
-        })}
+      {dailyAll.length > 0 && (
+        <div className="mt4">
+          <div className="label mb1" style={{ color: "#2C7A6B" }}>🐢 毎日少しずつ(今日の分 {dailyDone}/{dailyAll.length} 進めた)</div>
+          <div className="small muted mb2">終わらなくてOK。少しでも手をつけたら「今日ちょっと進めた」</div>
+          <div className="stack">
+            {dailyAll.map(function (t) {
+              const touched = t.touchedAt === today;
+              return (
+                <div key={t.id} style={{ opacity: touched ? .55 : 1 }}>
+                  <TaskCard t={t} allTags={data.tags} toggleDone={toggleDone} onEdit={onEdit} onSchedule={onSchedule} />
+                  <button className="btn btn-sm btn-block mt1" disabled={touched}
+                    style={touched ? { background: "#EAF4F1", color: "#2C7A6B" } : { background: "#2C7A6B", color: "#fff" }}
+                    onClick={function () { onPatch(t.id, { touchedAt: today }, "ナイス!今日の分OK 🐢"); }}>
+                    {touched ? "✓ 今日は進めた" : "🐢 今日ちょっと進めた"}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {blockList.length > 0 && (
+        <div className="mt4">
+          <div className="label mb1" style={{ color: "#9A5B12" }}>🧱 まとまった時間を確保しよう({blockList.length}件)</div>
+          <div className="small muted mb2">スキマ時間では進まないもの。⏰で時間をおさえてカレンダーに入れておこう</div>
+          <div className="stack">
+            {blockList.map(function (t) {
+              return <TaskCard key={t.id} t={t} allTags={data.tags} toggleDone={toggleDone} onEdit={onEdit} onSchedule={onSchedule} />;
+            })}
+          </div>
+        </div>
+      )}
+
+      {quickList.length > 0 && (
+        <div className="mt4">
+          <div className="label mb1" style={{ color: "#2E6B50" }}>⚡ スキマ時間で片づく({quickList.length}件)</div>
+          <div className="small muted mb2">会議の合間の15分に。🤖はClaudeに投げればOKなもの</div>
+          <div className="stack">
+            {quickList.slice(0, 6).map(function (t) {
+              return <TaskCard key={t.id} t={t} allTags={data.tags} toggleDone={toggleDone} onEdit={onEdit} onSchedule={onSchedule} />;
+            })}
+          </div>
+        </div>
+      )}
+
+      {undated.length > 0 && (
+        <div className="mt4">
+          <div className="label mb1" style={{ color: "#6B4E8A" }}>📌 期限を決めよう({undated.length}件)</div>
+          <div className="small muted mb2">期限がないタスクはずっと浮上してきません。迷ったら「金曜」で仮置きでもOK</div>
+          <div className="stack">
+            {(showAllUndated ? undated : undated.slice(0, 5)).map(function (t) {
+              return (
+                <div key={t.id} className="card" style={{ padding: "10px 12px", borderLeft: "4px solid " + (IMP_COLOR[t.importance] || "var(--gray)") }}>
+                  <div style={{ fontSize: "13px", cursor: "pointer", wordBreak: "break-word" }} onClick={function () { onEdit(t); }}>
+                    {isBig(t, data.tasks) ? "🏔 " : ""}{t.title}
+                    <span className="small muted"> ・作成 {fmtDate(day10(t.createdAt))}</span>
+                  </div>
+                  <QuickDateChips value="" onPick={function (v) { onSetDue(t.id, v); }} />
+                </div>
+              );
+            })}
+          </div>
+          {undated.length > 5 && (
+            <button className="small muted mt2" onClick={function () { setShowAllUndated(!showAllUndated); }}>
+              {showAllUndated ? "▲ たたむ" : "▼ 残り" + (undated.length - 5) + "件も表示"}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============ 大物ミニカード(今日タブ用) ============
+function BigMini({ b, toggleDone, onEdit, onGoBig }) {
+  const t = b.t, info = b.info;
+  const d = dueInfo(t.due, t.status);
+  const pct = info.total ? Math.round(info.doneCount / info.total * 100) : 0;
+  return (
+    <div className="card" style={{ padding: "10px 12px", borderLeft: "4px solid " + (IMP_COLOR[t.importance] || "var(--gray)") }}>
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div className="flex1" style={{ fontSize: "13px", fontWeight: 700, cursor: "pointer", wordBreak: "break-word" }} onClick={function () { onEdit(t); }}>{t.title}</div>
+        <span className="chip" style={{ background: d.bg, color: d.fg, flexShrink: 0 }}>{d.label}</span>
       </div>
+      {info.total > 0 ? (
+        <React.Fragment>
+          <div className="row mt2">
+            <div className="progress-track flex1"><div className="progress-fill" style={{ width: pct + "%" }} /></div>
+            <span className="small muted">{info.doneCount}/{info.total}</span>
+          </div>
+          {info.next ? (
+            <div className="row mt2" style={{ background: "var(--bg)", borderRadius: "8px", padding: "6px 8px" }}>
+              <button className="check-circle" style={{ flexShrink: 0 }} title="このステップを完了" onClick={function () { toggleDone(info.next.id); }}></button>
+              <div className="flex1 xs" style={{ cursor: "pointer", wordBreak: "break-word" }} onClick={function () { onEdit(info.next); }}>{info.next.waiting ? "⏳ 待ち: " : "👉 次: "}{info.next.title}{info.next.waiting && info.next.waitFor ? "(" + info.next.waitFor + ")" : ""}</div>
+              {info.next.due
+                ? <span className="chip" style={{ background: dueInfo(info.next.due, "open").bg, color: dueInfo(info.next.due, "open").fg, flexShrink: 0 }}>{dueInfo(info.next.due, "open").label}</span>
+                : <span className="small" style={{ color: "#B09A5A", flexShrink: 0 }}>期限なし</span>}
+            </div>
+          ) : (
+            <div className="small mt2" style={{ color: "#2E6B50" }}>🎉 全ステップ完了。大物タスク自体を完了にしよう</div>
+          )}
+        </React.Fragment>
+      ) : (
+        <button className="btn btn-sm mt2" style={{ background: "#FDEBD2", color: "#A65E00" }} onClick={onGoBig}>⚠ まだ分解されていません → ステップに分ける</button>
+      )}
+      {info.idle !== null && info.idle >= 3 && (
+        <div className="small bold mt2" style={{ color: "var(--accent)" }}>💤 {info.idle}日動いていません</div>
+      )}
     </div>
   );
 }
@@ -795,17 +1265,25 @@ function MemoTab({ data, update, onMakeTask }) {
 }
 
 // ============ タスクタブ ============
-function TaskTab({ data, toggleDone, onNew, onEdit, onSchedule }) {
+function TaskTab({ data, toggleDone, onNew, onEdit, onSchedule, onSetTagColor, onDeleteTag }) {
+  const [filterBall, setFilterBall] = useState("all");
+  const [showTagColors, setShowTagColors] = useState(false);
   const [filterState, setFilterState] = useState("open");
   const [filterAssignee, setFilterAssignee] = useState("all");
   const [filterImp, setFilterImp] = useState("all");
   const [filterTag, setFilterTag] = useState("all");
+  const [showSteps, setShowSteps] = useState(false);
 
   const assignees = ["自分"].concat(data.members.map(function (m) { return m.name; }));
 
   let list = data.tasks.filter(function (t) {
     if (filterState === "open" && t.status === "done") return false;
     if (filterState === "done" && t.status !== "done") return false;
+    if (filterState === "nodue" && (t.status === "done" || t.due)) return false;
+    if (!showSteps && t.parentId) return false;
+    if (filterBall === "me" && t.waiting) return false;
+    if (filterBall === "wait" && !t.waiting) return false;
+    if (["quick", "ai", "daily", "block"].indexOf(filterBall) >= 0 && t.mode !== filterBall) return false;
     if (filterAssignee !== "all" && t.assignee !== filterAssignee) return false;
     if (filterImp !== "all" && t.importance !== filterImp) return false;
     if (filterTag !== "all" && (t.tags || []).indexOf(filterTag) === -1) return false;
@@ -826,14 +1304,16 @@ function TaskTab({ data, toggleDone, onNew, onEdit, onSchedule }) {
     overdue: open.filter(function (t) { return t.due && daysUntil(t.due) < 0; }).length,
     today: open.filter(function (t) { return t.due && daysUntil(t.due) === 0; }).length,
     open: open.length,
+    wait: open.filter(function (t) { return t.waiting; }).length,
   };
 
   return (
     <div>
-      <div className="grid3 mb3">
+      <div className="mb3" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "8px" }}>
         {[
           { n: stats.overdue, label: "期限切れ", color: stats.overdue > 0 ? "var(--accent)" : "var(--ink)" },
           { n: stats.today, label: "今日まで", color: stats.today > 0 ? "var(--amber)" : "var(--ink)" },
+          { n: stats.wait, label: "相手待ち", color: stats.wait > 0 ? "#8A5AB2" : "var(--ink)" },
           { n: stats.open, label: "未完了", color: "var(--ink)" },
         ].map(function (s, i) {
           return (
@@ -847,7 +1327,12 @@ function TaskTab({ data, toggleDone, onNew, onEdit, onSchedule }) {
 
       <div className="filters mb3">
         <select className="select" value={filterState} onChange={function (e) { setFilterState(e.target.value); }}>
-          <option value="open">未完了</option><option value="done">完了済み</option><option value="all">すべて</option>
+          <option value="open">未完了</option><option value="nodue">📌 期限なしだけ</option><option value="done">完了済み</option><option value="all">すべて</option>
+        </select>
+        <select className="select" value={filterBall} onChange={function (e) { setFilterBall(e.target.value); }}>
+          <option value="all">ボール: 全部</option><option value="me">🙋 自分ボール</option><option value="wait">⏳ 相手待ち</option>
+          <option value="quick">⚡ すぐできる</option><option value="ai">🤖 AIでいける</option>
+          <option value="daily">🐢 毎日少しずつ</option><option value="block">🧱 時間をとる</option>
         </select>
         <select className="select" value={filterTag} onChange={function (e) { setFilterTag(e.target.value); }}>
           <option value="all">🏷 全タグ</option>
@@ -858,6 +1343,14 @@ function TaskTab({ data, toggleDone, onNew, onEdit, onSchedule }) {
         </select>
         <button className="btn btn-ink btn-sm" style={{ marginLeft: "auto", flexShrink: 0 }} onClick={onNew}>＋ 新規</button>
       </div>
+      <div className="row mb3" style={{ justifyContent: "space-between", flexWrap: "wrap" }}>
+        <label className="small muted row" style={{ gap: "4px" }}>
+          <input type="checkbox" checked={showSteps} onChange={function (e) { setShowSteps(e.target.checked); }} />
+          大物のステップも表示
+        </label>
+        <button className="btn btn-ghost btn-sm" onClick={function () { setShowTagColors(true); }}>🏷 タグ管理(色・削除)</button>
+      </div>
+      {showTagColors && <TagColorModal tags={data.tags} tasks={data.tasks} colors={data.tagColors || {}} onSet={onSetTagColor} onDelete={onDeleteTag} onClose={function () { setShowTagColors(false); }} />}
 
       <div className="stack">
         {list.length === 0 && <div className="center muted xs" style={{ padding: "40px 0" }}>該当するタスクはありません</div>}
@@ -870,27 +1363,38 @@ function TaskTab({ data, toggleDone, onNew, onEdit, onSchedule }) {
 }
 
 function TaskCard({ t, allTags, toggleDone, onEdit, onSchedule }) {
+  const ctx = React.useContext(AppCtx);
   const d = dueInfo(t.due, t.status);
   const done = t.status === "done";
+  const fr = ctx.fresh ? ctx.fresh[t.id] : null;
+  const parent = t.parentId ? ctx.tasks.find(function (x) { return x.id === t.parentId; }) : null;
+  const steps = !t.parentId ? ctx.tasks.filter(function (x) { return x.parentId === t.id; }) : [];
+  const stepsDone = steps.filter(function (x) { return x.status === "done"; }).length;
   return (
-    <div className="task-card" style={{ opacity: done ? .55 : 1 }}>
+    <div className="task-card" style={{ opacity: done ? .55 : 1, boxShadow: fr ? "0 0 0 2px #3B5BA5" : undefined, background: isWaiting(t) ? "#FBF8FD" : "#fff" }}>
       <div className="imp-bar" style={{ background: IMP_COLOR[t.importance] || "var(--gray)" }} />
       <button className="check-btn" onClick={function () { toggleDone(t.id); }} aria-label="完了切り替え">
         <span className={"check-circle" + (done ? " done" : "")}>{done ? "✓" : ""}</span>
       </button>
       <div className="flex1" style={{ padding: "10px 8px 10px 0", cursor: "pointer" }} onClick={function () { onEdit(t); }}>
+        {parent && <div className="small muted" style={{ marginBottom: "2px", wordBreak: "break-word" }}>🏔 {parent.title} のステップ</div>}
         <div style={{ fontSize: "13px", fontWeight: 500, wordBreak: "break-word", textDecoration: done ? "line-through" : "none" }}>
           {t.repeat ? "🔁 " : ""}{t.title}
         </div>
         <div className="wrap" style={{ marginTop: "6px" }}>
+          {fr && <span className="chip bold" style={{ background: "#E3EAF8", color: "#3B5BA5" }}>{fr === "new" ? "🆕 シートから追加" : "🔄 シートで更新"}</span>}
           <span className="chip" style={{ background: d.bg, color: d.fg }}>{d.label}</span>
           <span className="chip bold" style={{ background: IMP_COLOR[t.importance] || "var(--gray)", color: "#fff" }}>{t.importance}</span>
+          {steps.length > 0 && <span className="chip bold" style={{ background: "#EAEEF6", color: "var(--ink)" }}>🏔 {stepsDone}/{steps.length}</span>}
+          {!steps.length && t.effort === "大" && !t.parentId && <span className="chip bold" style={{ background: "#FDEBD2", color: "#A65E00" }}>🏔 未分解</span>}
           {(t.tags || []).map(function (tag) {
             return <span key={tag} className="chip" style={{ background: tagColor(tag, allTags), color: "#fff" }}>{tag}</span>;
           })}
           {t.assignee && t.assignee !== "自分" && <span className="chip" style={{ background: "#EAEEF6", color: "var(--ink-soft)" }}>👤 {t.assignee}</span>}
           {shouldStart(t) && <span className="chip bold" style={{ background: "#FDEBD2", color: "#A65E00" }}>🔥 着手推奨</span>}
           {t.requester && <span className="chip" style={{ background: "#F1EAF6", color: "#6B4E8A" }}>📩 {t.requester}</span>}
+          {isWaiting(t) && <span className="chip bold" style={{ background: "#EDE3F5", color: "#6B4E8A" }}>⏳ {t.waitFor ? t.waitFor + "待ち" : "相手待ち"}{waitDays(t) > 0 ? " " + waitDays(t) + "日" : ""}</span>}
+          {t.mode && MODE_LABEL[t.mode] && t.status !== "done" && <span className="chip bold" style={MODE_STYLE[t.mode]}>{MODE_LABEL[t.mode]}</span>}
           {t.planned && <span className="chip" style={{ background: "#E4F0EA", color: "#2E6B50" }}>⏰ {fmtDate(t.planned.date)} {t.planned.start}</span>}
         </div>
       </div>
@@ -905,8 +1409,12 @@ function TaskCard({ t, allTags, toggleDone, onEdit, onSchedule }) {
 }
 
 // ============ タスク編集モーダル ============
-function TaskModal({ task, members, allTags, impGuide, onSaveGuide, onSave, onDelete, onClose }) {
-  const [t, setT] = useState(Object.assign({ tags: [], repeat: "", repeatDays: [], requester: "", effort: "中" }, task));
+function TaskModal({ task, members, allTags, allTasks, impGuide, onSaveGuide, onSave, onDelete, onClose }) {
+  const [t, setT] = useState(Object.assign({ tags: [], repeat: "", repeatDays: [], requester: "", effort: "中", parentId: "" }, task));
+  const hasChildren = (allTasks || []).some(function (x) { return x.parentId === task.id; });
+  const parentOptions = (allTasks || []).filter(function (x) {
+    return x.id !== task.id && !x.parentId && (x.status !== "done" || x.id === t.parentId);
+  });
   const [newTags, setNewTags] = useState([]);
   const [tagInput, setTagInput] = useState("");
   const [showGuide, setShowGuide] = useState(false);
@@ -982,9 +1490,78 @@ function TaskModal({ task, members, allTags, impGuide, onSaveGuide, onSave, onDe
             <select className="select input" value={t.effort || "中"} onChange={function (e) { set("effort", e.target.value); }}>
               <option value="小">小: 1時間以内</option>
               <option value="中">中: 半日〜1日</option>
-              <option value="大">大: 数日がかり</option>
+              <option value="大">大: 数日がかり(🏔大物)</option>
             </select>
           </div>
+        </div>
+
+        {!hasChildren && parentOptions.length > 0 && (
+          <div className="mb3">
+            <label className="label">親タスク(大物のステップにする場合)</label>
+            <select className="select input" value={t.parentId || ""} onChange={function (e) { set("parentId", e.target.value); }}>
+              <option value="">なし(単独のタスク)</option>
+              {parentOptions.map(function (p) { return <option key={p.id} value={p.id}>{isBig(p, allTasks) ? "🏔 " : ""}{p.title}</option>; })}
+            </select>
+          </div>
+        )}
+        {hasChildren && (
+          <div className="small mb3" style={{ color: "var(--ink-soft)" }}>🏔 このタスクはステップを持つ大物です。ステップは大物タブで管理できます</div>
+        )}
+
+        <label className="label">ボール(いま誰が持ってる?)</label>
+        <div className="row mb2">
+          {[{ v: false, label: "🙋 自分" }, { v: true, label: "⏳ 相手待ち" }].map(function (o) {
+            const on = !!t.waiting === o.v;
+            return (
+              <button key={o.label} className="btn flex1" onClick={function () {
+                setT(function (p) {
+                  return Object.assign({}, p, o.v
+                    ? { waiting: true, waitSince: p.waitSince || todayStr(), remindAt: p.remindAt || plusDaysStr(3) }
+                    : { waiting: false, waitSince: "", remindAt: "" });
+                });
+              }}
+                style={on ? { background: o.v ? "#8A5AB2" : "var(--ink)", color: "#fff" } : { background: "var(--bg)", color: "var(--gray)", border: "1px solid var(--line)" }}>
+                {o.label}
+              </button>
+            );
+          })}
+        </div>
+        {t.waiting && (
+          <div className="mb3" style={{ background: "#FBF8FD", border: "1px solid #E6DAF0", borderRadius: "10px", padding: "10px" }}>
+            <div className="grid2">
+              <div>
+                <label className="label">誰を待ってる?</label>
+                <input className="input" value={t.waitFor || ""} onChange={function (e) { set("waitFor", e.target.value); }} placeholder="例: 村上さん" />
+              </div>
+              <div>
+                <label className="label">催促する日</label>
+                <input className="input" type="date" value={t.remindAt || ""} onChange={function (e) { set("remindAt", e.target.value); }} />
+              </div>
+            </div>
+            <QuickDateChips value={t.remindAt || ""} onPick={function (v) { set("remindAt", v); }} />
+            <div className="small muted mt1">待ち始め: {t.waitSince ? fmtDate(day10(t.waitSince)) : "今日"}・催促日になると今日タブで📣が出ます</div>
+          </div>
+        )}
+
+        <label className="label">進め方(任意)</label>
+        <div className="wrap mb1">
+          {[{ v: "", label: "ふつう" }, { v: "quick", label: "⚡ すぐできる" }, { v: "ai", label: "🤖 AIでいける" },
+            { v: "daily", label: "🐢 毎日少しずつ" }, { v: "block", label: "🧱 時間をとる" }].map(function (o) {
+            const on = (t.mode || "") === o.v;
+            return (
+              <button key={o.v || "none"} className="btn btn-sm" onClick={function () { set("mode", o.v); }}
+                style={on ? { background: "var(--ink)", color: "#fff" } : { background: "var(--bg)", color: "var(--gray)", border: "1px solid var(--line)" }}>
+                {o.label}
+              </button>
+            );
+          })}
+        </div>
+        <div className="small muted mb3">
+          {t.mode === "quick" ? "15分以内で終わる → 今日タブの「スキマ時間」に出ます"
+            : t.mode === "ai" ? "Claudeに任せられる → 今日タブの「スキマ時間」に出ます"
+            : t.mode === "daily" ? "毎日ちょっとずつ進める → 今日タブで毎日「今日ちょっと進めた」を押せます"
+            : t.mode === "block" ? "まとまった時間が必要 → 時間を確保するまで今日タブで⏰を促します"
+            : "特に分けない場合はこのまま"}
         </div>
 
         <div className="row mb1" style={{ justifyContent: "space-between" }}>
@@ -1047,7 +1624,12 @@ function TaskModal({ task, members, allTags, impGuide, onSaveGuide, onSave, onDe
             <button className="btn" style={{ color: "var(--accent)", background: "#FBE3DF" }} onClick={function () { onDelete(t.id); }}>削除</button>
           )}
           <button className="btn btn-ghost flex1" onClick={onClose}>キャンセル</button>
-          <button className="btn btn-ink flex1" onClick={function () { if (t.title.trim()) onSave(Object.assign({}, t, { title: t.title.trim() }), newTags); }}>保存</button>
+          <button className="btn btn-ink flex1" onClick={function () {
+            if (!t.title.trim()) return;
+            if (!t.due && !t.parentId && !t.repeat && !t.waiting &&
+              !window.confirm("期限が空です。\n期限なしのタスクは浮上してこないので、迷ったら「金曜」などで仮置きがおすすめです。\n\nこのまま期限なしで保存しますか?")) return;
+            onSave(Object.assign({}, t, { title: t.title.trim() }), newTags);
+          }}>保存</button>
         </div>
       </div>
     </div>
@@ -1149,364 +1731,194 @@ function ScheduleModal({ task, onPlanned, showToast, cloudCfg, onClose }) {
   );
 }
 
-// ============ 会議タブ ============
-function MeetingTab({ data, update, showToast }) {
-  const [title, setTitle] = useState("");
-  const [notes, setNotes] = useState("");
-  const [candidates, setCandidates] = useState(null);
-  const [error, setError] = useState("");
-  const [openMeeting, setOpenMeeting] = useState(null);
-
-  const memberNames = ["自分"].concat(data.members.map(function (m) { return m.name; }));
-
-  const extract = function () {
-    setError("");
-    const lines = notes.split(/\r?\n/)
-      .map(function (l) { return l.replace(/^[\s・\-\*●○◆▶►\d\.\)）]+/, "").trim(); })
-      .filter(function (l) { return l.length > 1; });
-    if (lines.length === 0) { setError("行が見つかりませんでした。1行に1件ずつ書いてください。"); return; }
-    setCandidates(lines.map(function (l) {
-      return { checked: true, title: l, assignee: "自分", due: "", importance: "中" };
-    }));
+// ============ タグの色 ============
+function TagColorModal({ tags, tasks, colors, onSet, onDelete, onClose }) {
+  const countOf = function (name) {
+    const all = (tasks || []).filter(function (t) { return (t.tags || []).indexOf(name) >= 0; });
+    return { all: all.length, open: all.filter(function (t) { return t.status !== "done"; }).length };
   };
-
-  const addSelected = function () {
-    const picked = candidates.filter(function (c) { return c.checked && c.title.trim(); });
-    if (picked.length === 0) return;
-    const meetingId = uid();
-    const meeting = {
-      id: meetingId,
-      title: title.trim() || "会議メモ " + fmtDate(todayStr()),
-      date: todayStr(),
-      notes: notes,
-      taskCount: picked.length,
-    };
-    const tagName = "会議";
-    const tags = data.tags.indexOf(tagName) >= 0 ? data.tags : data.tags.concat([tagName]);
-    const newTasks = picked.map(function (c) {
-      return {
-        id: uid(), title: c.title.trim(), note: "会議「" + meeting.title + "」より",
-        due: c.due || "", importance: c.importance, assignee: c.assignee || "自分",
-        requester: "", tags: [tagName], repeat: "", planned: null,
-        status: "open", source: "meeting", meetingId: meetingId, createdAt: todayStr(),
-      };
-    });
-    update(Object.assign({}, data, { tasks: data.tasks.concat(newTasks), meetings: [meeting].concat(data.meetings), tags: tags }));
-    setTitle(""); setNotes(""); setCandidates(null);
-    showToast(picked.length + "件のタスクを追加しました");
-  };
-
-  const setCand = function (i, k, v) {
-    setCandidates(function (prev) {
-      return prev.map(function (c, idx) { if (idx !== i) return c; const n = Object.assign({}, c); n[k] = v; return n; });
-    });
-  };
-
   return (
-    <div>
-      <div className="card">
-        <div className="label mb2">議事録・打合せメモを貼り付け → 行ごとにタスク候補に分解(1行=1タスク)</div>
-        <input className="input mb2" value={title} onChange={function (e) { setTitle(e.target.value); }} placeholder="会議名(例: 木曜定例・村上本部長)" />
-        <textarea className="textarea input" rows={6} value={notes} onChange={function (e) { setNotes(e.target.value); }}
-          placeholder={"やることを1行ずつ書いて(貼り付けて)ください。\n例:\n・外国籍スタッフのアンケート配布(田中さん)\n・ビザ更新リストの確認\n・稟議書の修正を村上さんに送る"} />
-        <button className="btn btn-accent btn-block mt2" onClick={extract} disabled={!notes.trim()}>
-          📋 行からタスク候補を作る
-        </button>
-        {error && <div className="small mt2" style={{ color: "var(--accent)" }}>{error}</div>}
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal" onClick={function (e) { e.stopPropagation(); }}>
+        <div className="bold mb1" style={{ color: "var(--ink)", fontSize: "14px" }}>🏷 タグ管理</div>
+        <div className="small muted mb3">色をタップで変更。使わなくなったタグは削除できます(タスク自体は消えません)</div>
+        {tags.length === 0 && <div className="small muted">まだタグがありません。タスク編集画面で作れます</div>}
+        <div className="stack">
+          {tags.map(function (name) {
+            const cur = tagColor(name, tags);
+            return (
+              <div key={name} style={{ borderTop: "1px solid var(--line)", paddingTop: "8px" }}>
+                <div className="row mb1" style={{ justifyContent: "space-between" }}>
+                  <div className="row">
+                    <span className="chip bold" style={{ background: cur, color: "#fff", padding: "4px 12px" }}>{name}</span>
+                    <span className="small muted">未完了{countOf(name).open}件</span>
+                  </div>
+                  <div className="row">
+                    {colors[name] && <button className="small muted" onClick={function () { onSet(name, ""); }}>色を戻す</button>}
+                    <button className="small bold" style={{ color: "var(--accent)" }} onClick={function () {
+                      const c = countOf(name);
+                      if (window.confirm("タグ「" + name + "」を削除しますか?" + (c.all ? "\n(" + c.all + "件のタスクからこのタグが外れます。タスクは消えません)" : ""))) onDelete(name);
+                    }}>🗑 削除</button>
+                  </div>
+                </div>
+                <div className="wrap">
+                  {TAG_PALETTE.map(function (c) {
+                    return (
+                      <button key={c} onClick={function () { onSet(name, c); }} aria-label={"色 " + c}
+                        style={{ width: "26px", height: "26px", borderRadius: "50%", background: c, border: cur === c ? "3px solid var(--ink)" : "2px solid #fff", boxShadow: "0 0 0 1px var(--line)" }} />
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <button className="btn btn-ghost btn-block mt4" onClick={onClose}>閉じる</button>
       </div>
-
-      {candidates && (
-        <div className="card mt3" style={{ border: "2px solid var(--ink)" }}>
-          <div className="label mb2" style={{ color: "var(--ink)" }}>タスク候補({candidates.length}件) — 内容・期限・担当を確認して追加</div>
-          <div className="stack" style={{ marginBottom: "12px" }}>
-            {candidates.map(function (c, i) {
-              return (
-                <div key={i} style={{ background: "var(--bg)", borderRadius: "8px", padding: "8px", opacity: c.checked ? 1 : .45 }}>
-                  <div className="row-start">
-                    <input type="checkbox" checked={c.checked} onChange={function (e) { setCand(i, "checked", e.target.checked); }}
-                      style={{ width: "16px", height: "16px", marginTop: "6px", flexShrink: 0 }} />
-                    <input className="input flex1" style={{ background: "#fff" }} value={c.title} onChange={function (e) { setCand(i, "title", e.target.value); }} />
-                  </div>
-                  <div className="row mt2" style={{ paddingLeft: "24px" }}>
-                    <input className="input flex1" style={{ background: "#fff", fontSize: "11px", padding: "4px 8px" }} type="date" value={c.due} onChange={function (e) { setCand(i, "due", e.target.value); }} />
-                    <select className="select" style={{ background: "#fff", fontSize: "11px", padding: "4px 8px", width: "auto" }} value={c.importance} onChange={function (e) { setCand(i, "importance", e.target.value); }}>
-                      <option value="高">高</option><option value="中">中</option><option value="低">低</option>
-                    </select>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          <button className="btn btn-ink btn-block" onClick={addSelected}>✓ 選択したタスクを追加</button>
-        </div>
-      )}
-
-      {data.meetings.length > 0 && (
-        <div className="mt4">
-          <div className="label mb2">会議の記録</div>
-          <div className="stack">
-            {data.meetings.map(function (m) {
-              return (
-                <div key={m.id} className="card">
-                  <button style={{ width: "100%", textAlign: "left" }} onClick={function () { setOpenMeeting(openMeeting === m.id ? null : m.id); }}>
-                    <div className="row" style={{ justifyContent: "space-between" }}>
-                      <div className="xs" style={{ fontSize: "13px", fontWeight: 500 }}>{m.title}</div>
-                      <div className="small muted" style={{ flexShrink: 0, marginLeft: "8px" }}>{fmtDate(m.date)} ・ {m.taskCount}件</div>
-                    </div>
-                  </button>
-                  {openMeeting === m.id && (
-                    <div className="small mt2" style={{ whiteSpace: "pre-wrap", background: "var(--bg)", borderRadius: "8px", padding: "8px", color: "#4A5568" }}>
-                      {m.notes}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
 
-// ============ メンバータブ ============
-function MemberTab({ data, update, onEdit, toggleDone, onSchedule }) {
-  const [name, setName] = useState("");
-  const [openMember, setOpenMember] = useState(null);
-
-  const addMember = function () {
-    const v = name.trim();
-    if (!v || data.members.some(function (m) { return m.name === v; })) return;
-    update(Object.assign({}, data, { members: data.members.concat([{ id: uid(), name: v }]) }));
-    setName("");
-  };
-  const removeMember = function (id) {
-    update(Object.assign({}, data, { members: data.members.filter(function (m) { return m.id !== id; }) }));
-  };
-
-  const rows = [{ id: "self", name: "自分" }].concat(data.members);
+// ============ 大物タブ ============
+function BigTab({ data, toggleDone, onEdit, onAddSteps, onNewBig, showToast }) {
+  const [showDone, setShowDone] = useState(false);
+  const bigs = data.tasks
+    .filter(function (t) { return isBig(t, data.tasks) && (showDone || t.status !== "done"); })
+    .sort(function (a, b) {
+      if ((a.status === "done") !== (b.status === "done")) return a.status === "done" ? 1 : -1;
+      return sortByDue(a, b);
+    })
+    .map(function (t) { return { t: t, info: bigInfo(t, data.tasks) }; });
+  const unsplit = bigs.filter(function (b) { return b.t.status !== "done" && b.info.total === 0; }).length;
 
   return (
     <div>
-      <div className="card">
-        <div className="label mb2">メンバーを追加(部下・チーム)</div>
-        <div className="row">
-          <input className="input flex1" value={name}
-            onChange={function (e) { setName(e.target.value); }}
-            onKeyDown={function (e) { if (e.key === "Enter") addMember(); }}
-            placeholder="名前(例: 田中)" />
-          <button className="btn btn-ink" onClick={addMember}>追加</button>
+      <div className="card mb3" style={{ background: "#F6F8FC" }}>
+        <div className="bold" style={{ fontSize: "14px", color: "var(--ink)" }}>🏔 大物タスク</div>
+        <div className="small muted mt1" style={{ lineHeight: 1.7 }}>
+          時間がかかる仕事は、15〜60分でできる「ステップ」に分けて、それぞれに期限を入れておくと、今日タブに1つずつ順番に出てきます。<br />
+          「かかる量: 大」のタスク、またはステップを持つタスクがここに並びます。
+        </div>
+        {unsplit > 0 && <div className="small bold mt2" style={{ color: "#A65E00" }}>⚠ まだ分解されていない大物が{unsplit}件あります</div>}
+        <div className="row mt3" style={{ justifyContent: "space-between" }}>
+          <button className="btn btn-ink btn-sm" onClick={onNewBig}>＋ 大物を追加</button>
+          <label className="small muted row" style={{ gap: "4px" }}>
+            <input type="checkbox" checked={showDone} onChange={function (e) { setShowDone(e.target.checked); }} /> 完了した大物も表示
+          </label>
         </div>
       </div>
 
-      <div className="stack mt4">
-        {rows.map(function (m) {
-          const mine = data.tasks.filter(function (t) { return t.assignee === m.name; });
-          const open = mine.filter(function (t) { return t.status !== "done"; });
-          const overdue = open.filter(function (t) { return t.due && daysUntil(t.due) < 0; }).length;
-          const done = mine.length - open.length;
-          const pct = mine.length === 0 ? 0 : Math.round((done / mine.length) * 100);
-          const expanded = openMember === m.id;
-          return (
-            <div key={m.id} className="card">
-              <button style={{ width: "100%", textAlign: "left" }} onClick={function () { setOpenMember(expanded ? null : m.id); }}>
-                <div className="row" style={{ justifyContent: "space-between" }}>
-                  <div className="bold xs" style={{ color: "var(--ink)", fontSize: "13px" }}>👤 {m.name}</div>
-                  <div className="small muted">
-                    未完了 <span className="bold" style={{ color: "var(--ink)" }}>{open.length}</span>
-                    {overdue > 0 && <span className="bold" style={{ color: "var(--accent)", marginLeft: "8px" }}>期限切れ {overdue}</span>}
-                  </div>
-                </div>
-                <div className="progress-track mt2"><div className="progress-fill" style={{ width: pct + "%" }} /></div>
-                <div className="small muted mt1">完了率 {pct}%({done}/{mine.length}件)</div>
-              </button>
-              {expanded && (
-                <div className="stack mt3">
-                  {open.length === 0 && <div className="small muted center" style={{ padding: "8px 0" }}>未完了タスクはありません</div>}
-                  {open.slice().sort(function (a, b) { return (a.due ? daysUntil(a.due) : 9999) - (b.due ? daysUntil(b.due) : 9999); })
-                    .map(function (t) { return <TaskCard key={t.id} t={t} allTags={data.tags} toggleDone={toggleDone} onEdit={onEdit} onSchedule={onSchedule} />; })}
-                  {m.id !== "self" && (
-                    <button className="btn btn-sm muted" style={{ textAlign: "left" }} onClick={function () { removeMember(m.id); }}>このメンバーを削除</button>
-                  )}
-                </div>
-              )}
-            </div>
-          );
+      {bigs.length === 0 && (
+        <div className="center muted xs" style={{ padding: "32px 0", lineHeight: 1.8 }}>
+          大物タスクはまだありません。<br />タスク編集で「かかる量: 大」にするか、上の「＋ 大物を追加」から。
+        </div>
+      )}
+      <div className="stack">
+        {bigs.map(function (b) {
+          return <BigCard key={b.t.id} b={b} allTags={data.tags} toggleDone={toggleDone} onEdit={onEdit} onAddSteps={onAddSteps} showToast={showToast} />;
         })}
       </div>
     </div>
   );
 }
 
-// ============ 報告タブ(週次報告) ============
-function ReportTab({ data, update, showToast }) {
-  const CATS = ["成果", "所感", "来週", "相談"];
-  const CAT_LABEL = { "成果": "① 成果", "所感": "② 所感", "来週": "③ 来週", "相談": "④ 相談" };
-  const CAT_COLOR = { "成果": "#2E8B6F", "所感": "#B25AA2", "来週": "#3B5BA5", "相談": "#C97B2D", "その他": "#C97B2D" };
-
+function BigCard({ b, allTags, toggleDone, onEdit, onAddSteps, showToast }) {
+  const t = b.t, info = b.info;
+  const done = t.status === "done";
+  const [open, setOpen] = useState(info.total === 0 && !done);
   const [text, setText] = useState("");
-  const [cat, setCat] = useState("成果");
-  const [report, setReport] = useState("");
-  const [showArchived, setShowArchived] = useState(false);
-  const inputRef = useRef(null);
+  const [due, setDue] = useState("");
+  const d = dueInfo(t.due, t.status);
+  const pct = info.total ? Math.round(info.doneCount / info.total * 100) : 0;
 
-  const notes = data.reportNotes || [];
-  const active = notes.filter(function (n) { return !n.reportedAt; });
-  const archived = notes.filter(function (n) { return n.reportedAt; });
-
-  const addNote = function () {
-    const v = text.trim();
-    if (!v) return;
-    const n = { id: uid(), cat: cat, text: v, createdAt: new Date().toISOString(), reportedAt: null };
-    update(Object.assign({}, data, { reportNotes: [n].concat(notes) }));
+  const add = function () {
+    const titles = text.split(/\r?\n/)
+      .map(function (s) { return s.replace(/^[\s・\-\*●○◆▶►→\d\.\)）]+/, "").trim(); })
+      .filter(Boolean);
+    if (!titles.length) return;
+    onAddSteps(t.id, titles, due);
     setText("");
-    if (inputRef.current) inputRef.current.focus();
   };
-  const delNote = function (id) {
-    update(Object.assign({}, data, { reportNotes: notes.filter(function (n) { return n.id !== id; }) }));
-  };
-
-  // 集計: 直近7日(今日含む) / 今後7日
-  const inLastWeek = function (s) { if (!s) return false; const n = daysUntil(String(s).slice(0, 10)); return n !== null && n <= 0 && n >= -6; };
-  const inNextWeek = function (s) { if (!s) return false; const n = daysUntil(s); return n !== null && n >= 0 && n <= 7; };
-
-  const doneThisWeek = data.tasks.filter(function (t) { return t.status === "done" && inLastWeek(t.doneAt); });
-  const meetingsThisWeek = data.meetings.filter(function (m) { return inLastWeek(m.date); });
-  const carryOver = data.tasks.filter(function (t) { return t.status !== "done" && t.due && daysUntil(t.due) < 0; });
-  const nextWeekTasks = data.tasks.filter(function (t) { return t.status !== "done" && t.due && inNextWeek(t.due); })
-    .sort(function (a, b) { return daysUntil(a.due) - daysUntil(b.due); });
-
-  const catNotes = function (c) { return active.filter(function (n) { return n.cat === c || (c === "相談" && n.cat === "その他"); }); };
-
-  const buildReport = function () {
-    const from = new Date(); from.setDate(from.getDate() - 6);
-    const who = function (t) { return t.assignee && t.assignee !== "自分" ? "(" + t.assignee + ")" : ""; };
-    const lines = [];
-    lines.push("【週次報告】" + fmtDate(dateToStr(from)) + "〜" + fmtDate(todayStr()));
-    lines.push("");
-    lines.push("■① 今週の成果・完了");
-    doneThisWeek.forEach(function (t) { lines.push("・" + t.title + who(t)); });
-    catNotes("成果").forEach(function (n) { lines.push("・" + n.text); });
-    if (meetingsThisWeek.length) lines.push("・実施した会議: " + meetingsThisWeek.map(function (m) { return m.title; }).join(" / "));
-    if (!doneThisWeek.length && !catNotes("成果").length && !meetingsThisWeek.length) lines.push("・(なし)");
-    lines.push("");
-    lines.push("■② 所感・気づき");
-    catNotes("所感").forEach(function (n) { lines.push("・" + n.text); });
-    if (!catNotes("所感").length) lines.push("・(なし)");
-    lines.push("");
-    lines.push("■③ 来週の優先事項");
-    nextWeekTasks.forEach(function (t) { lines.push("・" + fmtDate(t.due) + " " + t.title + "【" + t.importance + "】" + who(t)); });
-    catNotes("来週").forEach(function (n) { lines.push("・" + n.text); });
-    if (!nextWeekTasks.length && !catNotes("来週").length) lines.push("・(なし)");
-    lines.push("");
-    lines.push("■④ 持ち越し・懸念");
-    carryOver.forEach(function (t) { lines.push("・" + t.title + "(期限 " + fmtDate(t.due) + " 超過)"); });
-    if (!carryOver.length) lines.push("・(なし)");
-    lines.push("");
-    lines.push("■⑤ 相談事項");
-    catNotes("相談").forEach(function (n) { lines.push("・" + n.text); });
-    if (!catNotes("相談").length) lines.push("・(なし)");
-    setReport(lines.join("\n"));
-  };
-
-  const fallbackCopy = function (s) {
-    const ta = document.createElement("textarea");
-    ta.value = s; document.body.appendChild(ta); ta.select();
-    try { document.execCommand("copy"); } catch (e) { }
-    document.body.removeChild(ta);
-  };
-  const copyReport = function () {
-    const done = function () { showToast("コピーしました"); };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(report).then(done).catch(function () { fallbackCopy(report); done(); });
-    } else { fallbackCopy(report); done(); }
-  };
-
-  const archiveNotes = function () {
-    if (!active.length) return;
-    if (!window.confirm("今週分のメモ(" + active.length + "件)を報告済みにして一覧から片付けます。よろしいですか?")) return;
-    const today = todayStr();
-    update(Object.assign({}, data, {
-      reportNotes: notes.map(function (n) { return n.reportedAt ? n : Object.assign({}, n, { reportedAt: today }); })
-    }));
-    showToast("報告済みにしました。来週もがんばろう!");
-  };
+  const claudePrompt =
+    "凪タスク帳のスプレッドシート「タスク」シートに、次の大物タスクのステップを追加してください。\n\n" +
+    "大物タスク: " + t.title + (t.due ? "(期限 " + t.due + ")" : "(期限未定)") + "\n" +
+    (t.note ? "メモ: " + t.note + "\n" : "") +
+    "\nルール:\n" +
+    "・1ステップは15〜60分でできる粒度に分ける\n" +
+    "・「親タスク」列に「" + t.title + "」と入れる\n" +
+    "・「期限」は大物の期限から逆算して YYYY-MM-DD で入れる\n" +
+    "・「かかる量」は小、「状態」は未完了、「重要度」は" + (t.importance || "中") + "、ID列は空欄でOK\n" +
+    "・シートに書き込む前に、ステップ案を一度見せて確認してください";
 
   return (
-    <div>
-      <div className="card">
-        <div className="label mb2">報告・相談ネタをストック(木曜の週次報告用)</div>
-        <div className="wrap mb2">
-          {CATS.map(function (c) {
-            return (
-              <button key={c} className="chip" onClick={function () { setCat(c); }}
-                style={cat === c
-                  ? { background: CAT_COLOR[c], color: "#fff", padding: "5px 12px" }
-                  : { background: "var(--bg)", color: "var(--gray)", border: "1px solid var(--line)", padding: "5px 12px" }}>
-                {CAT_LABEL[c]}
-              </button>
-            );
-          })}
-        </div>
-        <div className="row">
-          <input ref={inputRef} className="input flex1" value={text}
-            onChange={function (e) { setText(e.target.value); }}
-            onKeyDown={function (e) { if (e.key === "Enter") addNote(); }}
-            placeholder="例: 面接通過率が改善 / 社宅の件を相談したい" />
-          <button className="btn btn-ink" onClick={addNote}>追加</button>
-        </div>
+    <div className="card" style={{ padding: "12px", borderLeft: "4px solid " + (IMP_COLOR[t.importance] || "var(--gray)"), opacity: done ? .6 : 1 }}>
+      <div className="row" style={{ alignItems: "flex-start" }}>
+        <button className={"check-circle" + (done ? " done" : "")} style={{ flexShrink: 0, marginTop: "1px" }} onClick={function () { toggleDone(t.id); }} aria-label="大物を完了">{done ? "✓" : ""}</button>
+        <div className="flex1" style={{ fontSize: "14px", fontWeight: 700, cursor: "pointer", wordBreak: "break-word", textDecoration: done ? "line-through" : "none" }} onClick={function () { onEdit(t); }}>{t.title}</div>
+      </div>
+      <div className="wrap mt2">
+        <span className="chip" style={{ background: d.bg, color: d.fg }}>{d.label}</span>
+        <span className="chip bold" style={{ background: IMP_COLOR[t.importance] || "var(--gray)", color: "#fff" }}>{t.importance}</span>
+        {(t.tags || []).map(function (tag) {
+          return <span key={tag} className="chip" style={{ background: tagColor(tag, allTags), color: "#fff" }}>{tag}</span>;
+        })}
+        {t.requester && <span className="chip" style={{ background: "#F1EAF6", color: "#6B4E8A" }}>📩 {t.requester}</span>}
       </div>
 
-      {active.length > 0 && (
-        <div className="stack mt3">
-          {active.map(function (n) {
+      {info.total > 0 && (
+        <div className="row mt2">
+          <div className="progress-track flex1"><div className="progress-fill" style={{ width: pct + "%" }} /></div>
+          <span className="small muted">{info.doneCount}/{info.total}({pct}%)</span>
+        </div>
+      )}
+      {!done && info.next && !open && (
+        <div className="xs mt2" style={{ color: "var(--ink-soft)", wordBreak: "break-word" }}>👉 次: {info.next.title}{info.next.due ? "(" + fmtDate(info.next.due) + ")" : ""}</div>
+      )}
+      {!done && info.idle !== null && info.idle >= 3 && (
+        <div className="small bold mt1" style={{ color: "var(--accent)" }}>💤 {info.idle}日動いていません</div>
+      )}
+
+      <button className="small bold mt2" style={{ color: "var(--ink-soft)" }} onClick={function () { setOpen(!open); }}>
+        {open ? "▲ 閉じる" : "▼ ステップを見る・追加する" + (info.total ? "(" + info.doneCount + "/" + info.total + ")" : "")}
+      </button>
+
+      {open && (
+        <div className="mt2">
+          {info.steps.map(function (s) {
+            const sd = s.status === "done";
+            const si = dueInfo(s.due, s.status);
             return (
-              <div key={n.id} className="card row-start" style={{ padding: "10px 12px" }}>
-                <span className="chip" style={{ background: CAT_COLOR[n.cat] || "var(--gray)", color: "#fff", flexShrink: 0 }}>{n.cat}</span>
-                <div className="flex1" style={{ fontSize: "13px", wordBreak: "break-word" }}>
-                  {n.text}
-                  <span className="small muted"> — {new Date(n.createdAt).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" })}</span>
-                </div>
-                <button className="small muted" style={{ flexShrink: 0 }} onClick={function () { delNote(n.id); }}>削除</button>
+              <div key={s.id} className="row" style={{ padding: "7px 0", borderTop: "1px solid var(--line)" }}>
+                <button className={"check-circle" + (sd ? " done" : "")} style={{ flexShrink: 0 }} onClick={function () { toggleDone(s.id); }} aria-label="ステップ完了">{sd ? "✓" : ""}</button>
+                <div className="flex1 xs" style={{ cursor: "pointer", wordBreak: "break-word", textDecoration: sd ? "line-through" : "none", color: sd ? "var(--gray)" : "inherit" }}
+                  onClick={function () { onEdit(s); }}>{s.title}</div>
+                {s.due
+                  ? <span className="chip" style={{ background: si.bg, color: si.fg, flexShrink: 0 }}>{si.label}</span>
+                  : (!sd && <span className="small" style={{ color: "#B09A5A", flexShrink: 0 }}>期限なし</span>)}
               </div>
             );
           })}
-        </div>
-      )}
 
-      <div className="card mt4">
-        <div className="label mb1">報告文を自動作成</div>
-        <div className="small muted mb2">
-          直近7日の実績から自動でまとめます: 完了 {doneThisWeek.length}件 / 会議 {meetingsThisWeek.length}件 / 来週期限 {nextWeekTasks.length}件 / 持ち越し {carryOver.length}件 + 上のメモ
-        </div>
-        <button className="btn btn-accent btn-block" onClick={buildReport}>📝 報告文を作る(①〜⑤形式)</button>
-        {report && (
-          <div className="mt3">
-            <textarea className="textarea input" rows={14} value={report} onChange={function (e) { setReport(e.target.value); }} style={{ fontSize: "12px" }} />
-            <div className="row mt2">
-              <button className="btn btn-ink flex1" onClick={copyReport}>📋 コピー</button>
-              <button className="btn btn-ghost flex1" onClick={archiveNotes}>✅ 報告済みにする</button>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {archived.length > 0 && (
-        <div className="mt3">
-          <button className="small muted" onClick={function () { setShowArchived(!showArchived); }}>
-            {showArchived ? "▲ 過去の報告メモを隠す" : "▼ 過去の報告メモを見る(" + archived.length + "件)"}
-          </button>
-          {showArchived && (
-            <div className="stack mt2">
-              {archived.map(function (n) {
-                return (
-                  <div key={n.id} className="card row-start" style={{ padding: "8px 12px", opacity: .6 }}>
-                    <span className="chip" style={{ background: "var(--gray)", color: "#fff", flexShrink: 0 }}>{n.cat}</span>
-                    <div className="flex1 small" style={{ wordBreak: "break-word" }}>{n.text}<span className="muted"> — 報告済 {fmtDate(n.reportedAt)}</span></div>
-                  </div>
-                );
-              })}
-            </div>
+          {!done && (
+            <React.Fragment>
+              {info.total === 0 && (
+                <div className="small mt1 mb2" style={{ background: "#FFF9EC", border: "1px solid #EFDDB0", color: "#5A4A20", borderRadius: "8px", padding: "8px 10px", lineHeight: 1.7 }}>
+                  💡 分解のコツ: 「最初の15分でできること」から書く。<br />
+                  例) 材料・資料を集める → 骨子を書く → ◯◯さんに確認 → 仕上げ → 提出
+                </div>
+              )}
+              <textarea className="textarea input mt2" rows={2} value={text} onChange={function (e) { setText(e.target.value); }}
+                placeholder={"ステップを入力(1行=1ステップ。まとめて貼り付けOK)"} />
+              <div className="row mt2">
+                <input type="date" className="input" style={{ flex: 1, width: "auto" }} value={due} onChange={function (e) { setDue(e.target.value); }} />
+                <button className="btn btn-ink btn-sm" onClick={add}>＋ 追加</button>
+              </div>
+              <QuickDateChips value={due} onPick={setDue} />
+              <div className="small muted mt1">↑ ここで選んだ期限が、今回追加するステップ全部に入ります(あとで個別に変更OK)</div>
+              <button className="btn btn-ghost btn-sm btn-block mt3" onClick={function () { copyText(claudePrompt, function () { showToast("Claude用の依頼文をコピーしました"); }); }}>
+                🤖 Claudeに分解を頼む(依頼文をコピー)
+              </button>
+            </React.Fragment>
           )}
         </div>
       )}
