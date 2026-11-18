@@ -22,7 +22,7 @@ button{font:inherit;border:none;background:none;cursor:pointer;}
 input,select,textarea{font:inherit;color:inherit;}
 .container{max-width:760px;margin:0 auto;padding:0 16px;}
 .app-header{background:var(--ink);color:#fff;}
-.header-inner{display:flex;align-items:center;justify-content:space-between;padding:12px 0;}
+.header-inner{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;}
 .card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px;box-shadow:0 1px 2px rgba(20,28,48,.05);}
 .btn{border-radius:8px;padding:8px 16px;font-size:13px;font-weight:700;}
 .btn:active{opacity:.8;}
@@ -682,10 +682,14 @@ function App() {
     }, extra || {});
   };
   const openEdit = function (t) { setEditTask(Object.assign({}, t)); };
+  const openSchedule = function (t, init) { setScheduleTask(Object.assign({}, t, { _init: init || null })); };
 
+  const waitAll = data.tasks.filter(isWaiting);
+  const waitHot = waitAll.filter(function (t) { return t.remindAt && daysUntil(t.remindAt) <= 0; }).length;
   const NAV = [
     { key: "today", label: "今日", icon: "📆" },
     { key: "tasks", label: "タスク", icon: "☑️" },
+    { key: "wait", label: "待ち", icon: "⏳", badge: waitAll.length, hot: waitHot > 0 },
     { key: "big", label: "大物", icon: "🏔" },
     { key: "memo", label: "メモ", icon: "✏️" },
   ];
@@ -727,11 +731,16 @@ function App() {
         )}
         {tab === "today" && (
           <TodayTab data={data} toggleDone={toggleDone} cloudCfg={cloudCfg} showToast={showToast}
-            onEdit={openEdit} onSchedule={setScheduleTask} onSetDue={setDue} onPatch={patchTask}
+            onEdit={openEdit} onSchedule={openSchedule} onSetDue={setDue} onPatch={patchTask}
             onGoBig={function () { setTab("big"); }}
+            onGoWait={function () { setTab("wait"); }}
             fresh={fresh} onClearFresh={function () { setFresh({}); }} />
         )}
-        {tab === "tasks" && <TaskTab data={data} toggleDone={toggleDone} onNew={function () { setEditTask(newTaskTemplate()); }} onEdit={openEdit} onSchedule={setScheduleTask} onSetTagColor={setTagColor} onDeleteTag={deleteTag} />}
+        {tab === "tasks" && <TaskTab data={data} toggleDone={toggleDone} onNew={function () { setEditTask(newTaskTemplate()); }} onEdit={openEdit} onSchedule={openSchedule} onSetTagColor={setTagColor} onDeleteTag={deleteTag} />}
+        {tab === "wait" && (
+          <WaitTab data={data} toggleDone={toggleDone} onEdit={openEdit} onPatch={patchTask}
+            onNewWait={function () { setEditTask(newTaskTemplate({ waiting: true, waitSince: todayStr(), remindAt: plusDaysStr(3) })); }} />
+        )}
         {tab === "big" && (
           <BigTab data={data} toggleDone={toggleDone} onEdit={openEdit} onAddSteps={addSteps} showToast={showToast}
             onNewBig={function () { setEditTask(newTaskTemplate({ effort: "大", importance: "高" })); }} />
@@ -762,7 +771,10 @@ function App() {
         <div className="nav-inner">
           {NAV.map(function (t) {
             return (
-              <button key={t.key} className={"nav-btn" + (tab === t.key ? " active" : "")} onClick={function () { setTab(t.key); }}>
+              <button key={t.key} className={"nav-btn" + (tab === t.key ? " active" : "")} onClick={function () { setTab(t.key); }} style={{ position: "relative" }}>
+                {t.badge > 0 && (
+                  <span style={{ position: "absolute", top: "3px", left: "50%", marginLeft: "6px", minWidth: "16px", height: "16px", borderRadius: "999px", padding: "0 4px", fontSize: "10px", lineHeight: "16px", fontWeight: 700, color: "#fff", background: t.hot ? "var(--accent)" : "#8A5AB2" }}>{t.badge}</span>
+                )}
                 <span className="nav-icon">{t.icon}</span>
                 {t.label}
               </button>
@@ -886,9 +898,244 @@ function DataModal({ data, update, showToast, onClose, cloudCfg, sync, onConnect
   );
 }
 
+// ============ 今日のタイムライン(空き時間の見える化) ============
+const DAY_KEY = "nagi-tasks:day";
+const DAY_DEFAULT = { start: 9, end: 19, ignore: ["起床", "寝る"] };
+const loadDaySet = () => {
+  try { const v = localStorage.getItem(DAY_KEY); return v ? Object.assign({}, DAY_DEFAULT, JSON.parse(v)) : DAY_DEFAULT; }
+  catch (e) { return DAY_DEFAULT; }
+};
+const saveDaySet = (s) => { try { localStorage.setItem(DAY_KEY, JSON.stringify(s)); } catch (e) { } };
+const toMin = (hm) => { if (!hm) return null; const p = String(hm).split(":"); const m = Number(p[0]) * 60 + Number(p[1] || 0); return isNaN(m) ? null : m; };
+const toHM = (m) => String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0");
+const fmtDur = (min) => (min >= 60 ? Math.floor(min / 60) + "時間" + (min % 60 ? (min % 60) + "分" : "") : min + "分");
+const nowMinutes = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
+
+function calcDay(events, planned, set, nowMin) {
+  const ws = set.start * 60, we = set.end * 60;
+  const items = [], outside = [], allDay = [];
+  (events || []).forEach(function (e) {
+    if (e.allDay) { allDay.push(e.title); return; }
+    const s = toMin(e.start); let en = toMin(e.end);
+    if (s === null || en === null) return;
+    if (en <= s) en = 24 * 60; // 23:30〜00:00 のような日またぎ
+    if (en <= ws || s >= we) { outside.push(e.start + " " + e.title); return; }
+    items.push({ kind: "event", title: e.title, s: Math.max(s, ws), e: Math.min(en, we), rs: e.start, re: e.end, ignored: set.ignore.indexOf(e.title) >= 0 });
+  });
+  (planned || []).forEach(function (t) {
+    const s = toMin(t.planned.start); if (s === null) return;
+    let en = toMin(t.planned.end); if (en === null || en <= s) en = s + 60;
+    if (en <= ws || s >= we) { outside.push(t.planned.start + " ☑️" + t.title); return; }
+    items.push({ kind: "task", title: t.title, task: t, s: Math.max(s, ws), e: Math.min(en, we), rs: t.planned.start, re: t.planned.end || toHM(en) });
+  });
+
+  // 重なる予定は横に並べる
+  items.sort(function (a, b) { return a.s - b.s || (b.e - b.s) - (a.e - a.s); });
+  let cluster = [], cols = [], clusterEnd = -1;
+  const closeCluster = function () { cluster.forEach(function (it) { it.cols = cols.length; }); cluster = []; cols = []; };
+  items.forEach(function (it) {
+    if (it.ignored) { it.col = 0; it.cols = 1; return; } // 空き扱いの予定は背景に敷くだけ(列をとらない)
+    if (it.s >= clusterEnd) { closeCluster(); clusterEnd = it.e; } else clusterEnd = Math.max(clusterEnd, it.e);
+    let c = cols.findIndex(function (end) { return end <= it.s; });
+    if (c === -1) { c = cols.length; cols.push(it.e); } else cols[c] = it.e;
+    it.col = c; cluster.push(it);
+  });
+  closeCluster();
+
+  // 空き時間(今から終業まで、30分以上のすき間)
+  const busy = items.filter(function (i) { return !i.ignored; }).map(function (i) { return [i.s, i.e]; }).sort(function (a, b) { return a[0] - b[0]; });
+  const from = Math.max(ws, Math.ceil(nowMin / 15) * 15);
+  const free = [];
+  let cur = from;
+  busy.forEach(function (b) {
+    if (b[1] <= cur) return;
+    if (b[0] > cur && b[0] - cur >= 30) free.push({ s: cur, e: b[0] });
+    cur = Math.max(cur, b[1]);
+  });
+  if (we - cur >= 30) free.push({ s: cur, e: we });
+
+  const meetingMin = items.filter(function (i) { return i.kind === "event" && !i.ignored; }).reduce(function (a, i) { return a + (i.e - i.s); }, 0);
+  const freeMin = free.reduce(function (a, f) { return a + (f.e - f.s); }, 0);
+  return { items: items, free: free, outside: outside, allDay: allDay, meetingMin: meetingMin, freeMin: freeMin };
+}
+
+function DayTimeline({ events, planned, daySet, onDaySet, onEditTask, onPickSlot, connected, loading, error }) {
+  const [showSet, setShowSet] = useState(false);
+  const nowMin = nowMinutes();
+  const d = calcDay(events, planned, daySet, nowMin);
+  const ws = daySet.start * 60, we = daySet.end * 60;
+  const PX = 0.8; // 1時間 = 48px
+  const top = function (m) { return (m - ws) * PX; };
+  const hours = [];
+  for (let h = daySet.start; h <= daySet.end; h++) hours.push(h);
+
+  const toggleIgnore = function (title) {
+    const on = daySet.ignore.indexOf(title) >= 0;
+    if (!window.confirm(on
+      ? "「" + title + "」を予定あつかいに戻しますか?"
+      : "「" + title + "」を空き時間あつかいにしますか?\n(表示は残りますが、空き時間と会議時間の計算から外れます。同じ名前の予定は次回以降も自動で外れます)")) return;
+    onDaySet(Object.assign({}, daySet, { ignore: on ? daySet.ignore.filter(function (x) { return x !== title; }) : daySet.ignore.concat([title]) }));
+  };
+  const hourOpts = function (from, to) { const a = []; for (let h = from; h <= to; h++) a.push(h); return a; };
+
+  return (
+    <div className="card mb4">
+      <div className="row mb2" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <div className="label" style={{ marginBottom: "2px" }}>今日のタイムライン</div>
+          <div className="small">
+            <span className="bold" style={{ color: "var(--ink-soft)" }}>予定 {fmtDur(d.meetingMin)}</span>
+            <span className="bold" style={{ color: "#2E8B6F", marginLeft: "10px" }}>これからの空き {fmtDur(d.freeMin)}</span>
+          </div>
+        </div>
+        <button className="small muted" onClick={function () { setShowSet(!showSet); }}>⚙ 表示設定</button>
+      </div>
+
+      {showSet && (
+        <div className="mb3" style={{ background: "var(--bg)", borderRadius: "8px", padding: "10px" }}>
+          <div className="row small mb2">
+            勤務時間
+            <select className="select" style={{ width: "auto", padding: "4px 6px", fontSize: "12px", background: "#fff" }} value={daySet.start}
+              onChange={function (e) { onDaySet(Object.assign({}, daySet, { start: Number(e.target.value) })); }}>
+              {hourOpts(5, 12).map(function (h) { return <option key={h} value={h}>{h}:00</option>; })}
+            </select>
+            〜
+            <select className="select" style={{ width: "auto", padding: "4px 6px", fontSize: "12px", background: "#fff" }} value={daySet.end}
+              onChange={function (e) { onDaySet(Object.assign({}, daySet, { end: Number(e.target.value) })); }}>
+              {hourOpts(14, 24).map(function (h) { return <option key={h} value={h}>{h}:00</option>; })}
+            </select>
+          </div>
+          <div className="small muted mb1">空き時間あつかいにしている予定(×で戻す)</div>
+          <div className="wrap">
+            {daySet.ignore.length === 0 && <span className="small muted">なし</span>}
+            {daySet.ignore.map(function (t) {
+              return (
+                <button key={t} className="chip" style={{ background: "#fff", border: "1px solid var(--line)", color: "var(--ink-soft)", padding: "4px 10px" }}
+                  onClick={function () { onDaySet(Object.assign({}, daySet, { ignore: daySet.ignore.filter(function (x) { return x !== t; }) })); }}>
+                  {t} ×
+                </button>
+              );
+            })}
+          </div>
+          <div className="small muted mt2">※この設定は端末ごとに保存されます</div>
+        </div>
+      )}
+
+      {d.allDay.length > 0 && (
+        <div className="wrap mb2">
+          {d.allDay.map(function (t, i) { return <span key={i} className="chip" style={{ background: "#EAEEF6", color: "var(--ink-soft)" }}>終日: {t}</span>; })}
+        </div>
+      )}
+      {!connected && <div className="small muted mb2">スプレッドシート連携(💾)をすると、Googleカレンダーの予定もここに並びます</div>}
+      {error && <div className="small mb2" style={{ color: "var(--accent)" }}>{error}</div>}
+      {loading && <div className="small muted mb2">予定を読み込み中…</div>}
+
+      <div style={{ position: "relative", height: (we - ws) * PX + "px", marginTop: "6px" }}>
+        {hours.map(function (h) {
+          return (
+            <div key={h} style={{ position: "absolute", top: top(h * 60) + "px", left: 0, right: 0, borderTop: "1px solid var(--line)" }}>
+              <span style={{ position: "absolute", top: "-7px", left: 0, width: "38px", textAlign: "right", fontSize: "10px", color: "var(--gray)", background: "#fff", paddingRight: "4px" }}>{h}:00</span>
+            </div>
+          );
+        })}
+        <div style={{ position: "absolute", left: "44px", right: 0, top: 0, bottom: 0 }}>
+          {d.items.filter(function (it) { return it.ignored; }).map(function (it, i) {
+            return (
+              <React.Fragment key={"g" + i}>
+                <div style={{ position: "absolute", top: top(it.s) + "px", height: (it.e - it.s) * PX + "px", left: 0, right: 0, background: "repeating-linear-gradient(135deg,transparent,transparent 7px,rgba(138,147,163,.10) 7px,rgba(138,147,163,.10) 14px)", borderRadius: "6px", pointerEvents: "none" }} />
+                <button onClick={function () { toggleIgnore(it.title); }} title="タップで予定あつかいに戻す"
+                  style={{ position: "absolute", top: top(it.s) + 2 + "px", right: "4px", zIndex: 3, fontSize: "10px", color: "var(--gray)", background: "rgba(255,255,255,.9)", border: "1px dashed #C9CED8", borderRadius: "999px", padding: "1px 8px", maxWidth: "60%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {it.title} {it.rs}〜{it.re}(空き扱い)
+                </button>
+              </React.Fragment>
+            );
+          })}
+          {d.free.map(function (f, i) {
+            const h = (f.e - f.s) * PX;
+            return (
+              <button key={"f" + i} onClick={function () { onPickSlot(f); }}
+                style={{ position: "absolute", top: top(f.s) + 1 + "px", height: h - 2 + "px", left: 0, right: 0, background: "rgba(46,139,111,.07)", border: "1.5px dashed #8CC9B1", borderRadius: "8px", color: "#2E6B50", fontSize: "11px", fontWeight: 700, textAlign: "left", padding: "0 10px", display: "flex", alignItems: h >= 40 ? "flex-start" : "center", paddingTop: h >= 40 ? "6px" : 0, overflow: "hidden" }}>
+                空き {toHM(f.s)}〜{toHM(f.e)}({fmtDur(f.e - f.s)})<span style={{ marginLeft: "auto" }}>＋ タスクを入れる</span>
+              </button>
+            );
+          })}
+          {d.items.filter(function (it) { return !it.ignored; }).map(function (it, i) {
+            const h = Math.max((it.e - it.s) * PX, 18);
+            const isTask = it.kind === "task";
+            const style = isTask
+              ? { background: "#FBE3DF", borderLeft: "3px solid var(--accent)", color: "#7A2A1E" }
+              : it.ignored
+                ? { background: "repeating-linear-gradient(135deg,#fff,#fff 6px,#F2F4F7 6px,#F2F4F7 12px)", border: "1px dashed #C9CED8", color: "var(--gray)" }
+                : { background: "#E6EBF5", borderLeft: "3px solid var(--ink)", color: "var(--ink)" };
+            return (
+              <div key={"i" + i}
+                onClick={function () { if (isTask) onEditTask(it.task); else toggleIgnore(it.title); }}
+                title={isTask ? "タスクを開く" : (it.ignored ? "タップで予定あつかいに戻す" : "タップで空き時間あつかいにする")}
+                style={Object.assign({
+                  position: "absolute", top: top(it.s) + 1 + "px", height: h - 2 + "px",
+                  left: "calc(" + (it.col / it.cols * 100) + "% + " + (it.col ? 2 : 0) + "px)",
+                  width: "calc(" + (100 / it.cols) + "% - " + (it.cols > 1 ? 2 : 0) + "px)",
+                  borderRadius: "6px", padding: "2px 6px", fontSize: "11px", overflow: "hidden", cursor: "pointer", lineHeight: 1.35, boxSizing: "border-box", zIndex: 2,
+                }, style)}>
+                <div className="bold" style={{ whiteSpace: h < 30 ? "nowrap" : "normal", overflow: "hidden", textOverflow: "ellipsis" }}>{isTask ? "☑️ " : ""}{it.title}</div>
+                {h >= 30 && <div style={{ fontSize: "10px", opacity: .8 }}>{it.rs}〜{it.re}{it.ignored ? " ・空き扱い" : ""}</div>}
+              </div>
+            );
+          })}
+          {nowMin > ws && nowMin < we && (
+            <React.Fragment>
+              <div style={{ position: "absolute", top: 0, height: top(nowMin) + "px", left: 0, right: 0, background: "rgba(242,244,247,.55)", pointerEvents: "none", borderRadius: "4px" }} />
+              <div style={{ position: "absolute", top: top(nowMin) + "px", left: "-6px", right: 0, height: "2px", background: "var(--accent)", pointerEvents: "none" }}>
+                <span style={{ position: "absolute", left: 0, top: "-4px", width: "10px", height: "10px", borderRadius: "50%", background: "var(--accent)" }} />
+              </div>
+            </React.Fragment>
+          )}
+        </div>
+      </div>
+
+      {d.outside.length > 0 && <div className="small muted mt2">勤務時間外: {d.outside.join(" / ")}</div>}
+      <div className="small muted mt1">緑の点線 = これからの空き時間(タップでタスクを入れられます)。個人の予定はタップで「空き扱い」にできます</div>
+    </div>
+  );
+}
+
+// 空き枠に入れるタスクを選ぶ
+function SlotPickModal({ slot, candidates, allTags, onPick, onClose }) {
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal" onClick={function (e) { e.stopPropagation(); }}>
+        <div className="bold" style={{ color: "var(--ink)", fontSize: "14px" }}>空き {toHM(slot.s)}〜{toHM(slot.e)} に何をやる?</div>
+        <div className="small muted mb3">({fmtDur(slot.e - slot.s)})タップすると時間を決める画面に進みます</div>
+        {candidates.length === 0 && <div className="small muted">候補のタスクがありません</div>}
+        <div className="stack">
+          {candidates.map(function (c) {
+            const t = c.t;
+            const di = dueInfo(t.due, t.status);
+            return (
+              <button key={t.id} className="card" style={{ textAlign: "left", padding: "9px 12px", borderLeft: "4px solid " + (IMP_COLOR[t.importance] || "var(--gray)") }}
+                onClick={function () { onPick(t); }}>
+                <div className="small bold" style={{ color: c.color, marginBottom: "2px" }}>{c.why}</div>
+                <div style={{ fontSize: "13px", wordBreak: "break-word" }}>{c.prefix || ""}{t.title}</div>
+                <div className="wrap mt1">
+                  <span className="chip" style={{ background: di.bg, color: di.fg }}>{di.label}</span>
+                  {t.mode && MODE_LABEL[t.mode] && <span className="chip bold" style={MODE_STYLE[t.mode]}>{MODE_LABEL[t.mode]}</span>}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+        <button className="btn btn-ghost btn-block mt3" onClick={onClose}>閉じる</button>
+      </div>
+    </div>
+  );
+}
+
 // ============ 今日タブ ============
-function TodayTab({ data, toggleDone, onEdit, onSchedule, cloudCfg, showToast, onSetDue, onPatch, onGoBig, fresh, onClearFresh }) {
+function TodayTab({ data, toggleDone, onEdit, onSchedule, cloudCfg, showToast, onSetDue, onPatch, onGoBig, onGoWait, fresh, onClearFresh }) {
   const [showAllUndated, setShowAllUndated] = useState(false);
+  const [daySet, setDaySetState] = useState(loadDaySet());
+  const [slot, setSlot] = useState(null);
+  const setDaySet = function (s) { saveDaySet(s); setDaySetState(s); };
   const [events, setEvents] = useState(null);
   const [evLoading, setEvLoading] = useState(false);
   const [evError, setEvError] = useState("");
@@ -934,6 +1181,27 @@ function TodayTab({ data, toggleDone, onEdit, onSchedule, cloudCfg, showToast, o
   const quickList = openTasks.filter(function (t) { return (t.mode === "quick" || t.mode === "ai") && !t.waiting && !shownIds[t.id]; })
     .sort(function (a, b) { return a.mode === b.mode ? sortByDue(a, b) : (a.mode === "quick" ? -1 : 1); });
   const dailyAll = openTasks.filter(function (t) { return t.mode === "daily" && !t.waiting; }).sort(sortByDue);
+  const slotCandidates = (function () {
+    const seen = {}, out = [];
+    const push = function (list, why, color, prefix) {
+      list.forEach(function (t) {
+        if (!t || seen[t.id] || t.waiting || t.status === "done") return;
+        if (t.planned && t.planned.date === today) return;
+        if (isBig(t, data.tasks) && childrenOf(data.tasks, t.id).length) return; // 分解済みの大物はステップで出す
+        seen[t.id] = true;
+        out.push({ t: t, why: why, color: color, prefix: prefix });
+      });
+    };
+    push(todayTasks, "今日まで・期限切れ", "var(--accent)");
+    push(startSoon, "🔥 そろそろ着手", "#A65E00");
+    push(bigs.map(function (b) { return b.info.next; }), "🏔 大物の次の一歩", "var(--ink)");
+    push(bigs.filter(function (b) { return b.info.total === 0; }).map(function (b) { return b.t; }), "🏔 大物(分解する時間に)", "var(--ink)");
+    push(openTasks.filter(function (t) { return t.mode === "block"; }).sort(sortByDue), "🧱 まとまった時間が必要", "#9A5B12");
+    push(dailyAll, "🐢 毎日少しずつ", "#2C7A6B");
+    push(openTasks.filter(function (t) { return t.mode === "quick" || t.mode === "ai"; }).sort(sortByDue), "⚡ スキマ時間で片づく", "#2E6B50");
+    push(openTasks.filter(function (t) { return t.due; }).sort(sortByDue), "期限が近い順", "var(--gray)");
+    return out.slice(0, 15);
+  })();
   const dailyDone = dailyAll.filter(function (t) { return t.touchedAt === today; }).length;
   const blockList = openTasks.filter(function (t) {
     return t.mode === "block" && !t.waiting && !(t.planned && t.planned.date && daysUntil(t.planned.date) >= 0);
@@ -945,7 +1213,7 @@ function TodayTab({ data, toggleDone, onEdit, onSchedule, cloudCfg, showToast, o
     .concat(plannedToday.map(function (t) { return { kind: "task", title: t.title, start: t.planned.start, end: t.planned.end, task: t }; }))
     .sort(function (a, b) { return (a.allDay ? "00:00" : a.start || "99:99").localeCompare(b.allDay ? "00:00" : b.start || "99:99"); });
 
-  const meetingMin = evList.reduce(function (sum, e) { return sum + (e.minutes || 0); }, 0);
+  const meetingMin = calcDay(evList, plannedToday, daySet, 0).meetingMin;
   const fmtMin = function (min) { return Math.floor(min / 60) + "時間" + (min % 60 ? (min % 60) + "分" : ""); };
   const doneToday = data.tasks.filter(function (t) { return t.status === "done" && t.doneAt === today; });
 
@@ -954,8 +1222,13 @@ function TodayTab({ data, toggleDone, onEdit, onSchedule, cloudCfg, showToast, o
     lines.push("【" + fmtDate(today) + "(" + youbi + ") 日報用メモ】");
     lines.push("");
     lines.push("■会議・予定: 合計 " + (meetingMin ? fmtMin(meetingMin) : "0分"));
-    evList.forEach(function (e) { lines.push("・" + (e.allDay ? "終日" : e.start + "〜" + e.end) + " " + e.title + (e.minutes ? "(" + e.minutes + "分)" : "")); });
-    if (!evList.length) lines.push("・(予定なし)");
+    const workEv = evList.filter(function (e) {
+      if (e.allDay || daySet.ignore.indexOf(e.title) >= 0) return false;
+      const s = toMin(e.start), en = toMin(e.end);
+      return !(s !== null && en !== null && en > s && (en <= daySet.start * 60 || s >= daySet.end * 60));
+    });
+    workEv.forEach(function (e) { lines.push("・" + e.start + "〜" + e.end + " " + e.title + (e.minutes ? "(" + e.minutes + "分)" : "")); });
+    if (!workEv.length) lines.push("・(予定なし)");
     lines.push("");
     lines.push("■完了したタスク(" + doneToday.length + "件)");
     doneToday.forEach(function (t) { lines.push("・" + t.title); });
@@ -988,47 +1261,31 @@ function TodayTab({ data, toggleDone, onEdit, onSchedule, cloudCfg, showToast, o
         </div>
       </div>
 
-      {freshTasks.length > 0 && (
-        <div className="card mb4" style={{ border: "2px solid #3B5BA5" }}>
-          <div className="row mb2" style={{ justifyContent: "space-between" }}>
-            <div className="label" style={{ marginBottom: 0, color: "#3B5BA5" }}>🆕 シートから届いた変更({freshTasks.length}件)</div>
-            <button className="btn btn-ghost btn-sm" onClick={onClearFresh}>確認OK</button>
-          </div>
-          <div className="stack">
-            {freshTasks.map(function (t) {
-              return <TaskCard key={t.id} t={t} allTags={data.tags} toggleDone={toggleDone} onEdit={onEdit} onSchedule={onSchedule} />;
-            })}
-          </div>
-        </div>
+      <DayTimeline events={evList} planned={plannedToday} daySet={daySet} onDaySet={setDaySet}
+        onEditTask={onEdit} onPickSlot={setSlot} connected={connected} loading={evLoading} error={evError} />
+      {slot && (
+        <SlotPickModal slot={slot} candidates={slotCandidates} allTags={data.tags}
+          onClose={function () { setSlot(null); }}
+          onPick={function (t) {
+            const len = slot.e - slot.s;
+            setSlot(null);
+            onSchedule(t, { date: today, start: toHM(slot.s), dur: len });
+          }} />
       )}
 
-      <div className="card mb4">
-        <div className="row mb2" style={{ justifyContent: "space-between" }}>
-          <div className="label" style={{ marginBottom: 0 }}>今日の予定 + 実行予定タスク</div>
-          {meetingMin > 0 && <div className="small bold" style={{ color: "var(--ink-soft)" }}>🕐 会議・予定 合計 {fmtMin(meetingMin)}</div>}
-        </div>
-        {!connected && (
-          <div className="small muted center" style={{ padding: "8px 0" }}>
-            スプレッドシート連携(💾)をすると、Googleカレンダーの今日の予定がここに表示されます
-          </div>
-        )}
-        {evError && <div className="small mb2" style={{ color: "var(--accent)" }}>{evError}</div>}
-        {connected && !evLoading && !evError && timeline.length === 0 && (
-          <div className="small muted center" style={{ padding: "8px 0" }}>今日の予定はありません。集中デーですね!</div>
-        )}
-        <div className="stack">
-          {timeline.map(function (item, i) {
-            return (
-              <div key={i} className={"tl-row" + (item.kind === "task" ? " is-task" : "")}
-                style={item.task ? { cursor: "pointer" } : {}}
-                onClick={item.task ? function () { onEdit(item.task); } : undefined}>
-                <div className="tl-time">{item.allDay ? "終日" : item.start + "〜" + item.end}</div>
-                <div className="xs flex1" style={{ wordBreak: "break-word" }}>{item.kind === "task" ? "☑️ " : ""}{item.title}</div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
+      {freshTasks.length > 0 && <FreshSummary tasks={freshTasks} fresh={fresh} onEdit={onEdit} onClear={onClearFresh} />}
+
+      {waitingList.length > 0 && (
+        <button className="card row mb4" onClick={onGoWait}
+          style={{ width: "100%", textAlign: "left", padding: "10px 12px", borderLeft: "4px solid " + (remindNow ? "var(--accent)" : "#8A5AB2"), background: remindNow ? "#FFF6F4" : "#fff" }}>
+          <span className="flex1" style={{ fontSize: "13px" }}>
+            {remindNow > 0
+              ? <b style={{ color: "var(--accent)" }}>📣 催促どきの相手待ちが{remindNow}件</b>
+              : <span style={{ color: "#6B4E8A" }}>⏳ 相手待ち {waitingList.length}件(催促どきはまだなし)</span>}
+          </span>
+          <span className="small bold" style={{ color: "var(--ink-soft)", flexShrink: 0 }}>待ちタブへ →</span>
+        </button>
+      )}
 
       <div className="label mb2">今日やるタスク({todayTasks.length}件) — 期限切れ・今日期限・今日に予定したもの</div>
       <div className="stack">
@@ -1037,37 +1294,6 @@ function TodayTab({ data, toggleDone, onEdit, onSchedule, cloudCfg, showToast, o
           return <TaskCard key={t.id} t={t} allTags={data.tags} toggleDone={toggleDone} onEdit={onEdit} onSchedule={onSchedule} />;
         })}
       </div>
-
-      {waitingList.length > 0 && (
-        <div className="mt4">
-          <div className="label mb1" style={{ color: "#6B4E8A" }}>
-            ⏳ 相手待ち({waitingList.length}件){remindNow > 0 && <span style={{ color: "var(--accent)" }}> ・📣 催促どき {remindNow}件</span>}
-          </div>
-          <div className="small muted mb2">ボールは相手。返ってきたら「戻ってきた」で自分のタスクに戻します</div>
-          <div className="stack">
-            {waitingList.map(function (t) {
-              const wd = waitDays(t);
-              const due = t.remindAt ? daysUntil(t.remindAt) : null;
-              const hot = due !== null && due <= 0;
-              return (
-                <div key={t.id} className="card" style={{ padding: "10px 12px", borderLeft: "4px solid #8A5AB2", background: hot ? "#FFF6F4" : "#fff" }}>
-                  <div style={{ fontSize: "13px", cursor: "pointer", wordBreak: "break-word" }} onClick={function () { onEdit(t); }}>{t.title}</div>
-                  <div className="wrap mt1">
-                    <span className="chip" style={{ background: "#F1EAF6", color: "#6B4E8A" }}>⏳ {t.waitFor ? t.waitFor + "待ち" : "相手待ち"}{wd !== null ? "・" + (wd <= 0 ? "今日から" : wd + "日目") : ""}</span>
-                    {t.remindAt && <span className="chip bold" style={hot ? { background: "#FBE3DF", color: "var(--accent)" } : { background: "var(--bg)", color: "var(--ink-soft)" }}>📣 {hot ? "催促どき(" + fmtDate(t.remindAt) + ")" : fmtDate(t.remindAt) + " に催促"}</span>}
-                    {t.due && <span className="chip" style={{ background: dueInfo(t.due, "open").bg, color: dueInfo(t.due, "open").fg }}>{dueInfo(t.due, "open").label}</span>}
-                  </div>
-                  <div className="row mt2">
-                    <button className="btn btn-ghost btn-sm flex1" onClick={function () { onPatch(t.id, { waiting: false, waitSince: "", remindAt: "" }, "自分ボールに戻しました"); }}>📥 戻ってきた</button>
-                    <button className="btn btn-ghost btn-sm flex1" onClick={function () { onPatch(t.id, { remindAt: plusDaysStr(3) }, "催促済み。次は " + fmtDate(plusDaysStr(3)) + " に確認します"); }}>📣 催促した(+3日)</button>
-                    <button className="btn btn-ghost btn-sm" onClick={function () { toggleDone(t.id); }}>✓ 完了</button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
 
       <div className="mt4">
         <div className="row mb2" style={{ justifyContent: "space-between" }}>
@@ -1163,6 +1389,139 @@ function TodayTab({ data, toggleDone, onEdit, onSchedule, cloudCfg, showToast, o
               {showAllUndated ? "▲ たたむ" : "▼ 残り" + (undated.length - 5) + "件も表示"}
             </button>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============ シートからの変更(たたんで表示) ============
+function FreshSummary({ tasks, fresh, onEdit, onClear }) {
+  const [open, setOpen] = useState(false);
+  const [allUpd, setAllUpd] = useState(false);
+  const news = tasks.filter(function (t) { return fresh[t.id] === "new"; });
+  const upds = tasks.filter(function (t) { return fresh[t.id] === "upd"; });
+  const row = function (t) {
+    return (
+      <button key={t.id} className="row" onClick={function () { onEdit(t); }}
+        style={{ width: "100%", textAlign: "left", padding: "7px 0", borderTop: "1px solid var(--line)" }}>
+        <span className="flex1" style={{ fontSize: "12px", wordBreak: "break-word", color: t.status === "done" ? "var(--gray)" : "inherit" }}>{t.status === "done" ? "✓ " : ""}{t.title}</span>
+        {t.due && <span className="small muted" style={{ flexShrink: 0 }}>{fmtDate(t.due)}</span>}
+      </button>
+    );
+  };
+  const updShown = allUpd ? upds : upds.slice(0, 8);
+  return (
+    <div className="card mb4" style={{ padding: "10px 12px", borderLeft: "4px solid #3B5BA5" }}>
+      <div className="row" style={{ justifyContent: "space-between" }}>
+        <button className="flex1" style={{ textAlign: "left", color: "#3B5BA5", fontWeight: 700, fontSize: "13px" }} onClick={function () { setOpen(!open); }}>
+          🆕 シートから {news.length ? "新規" + news.length + "件" : ""}{news.length && upds.length ? "・" : ""}{upds.length ? "更新" + upds.length + "件" : ""}
+          <span className="small muted" style={{ marginLeft: "6px" }}>{open ? "▲ たたむ" : "▼ 見る"}</span>
+        </button>
+        <button className="btn btn-ghost btn-sm" onClick={onClear}>確認OK</button>
+      </div>
+      {open && (
+        <div className="mt2">
+          {news.length > 0 && <div className="small bold mt1 mb1" style={{ color: "#3B5BA5" }}>新しく追加されたタスク</div>}
+          {news.map(row)}
+          {upds.length > 0 && <div className="small bold mt3 mb1 muted">内容が変わったタスク</div>}
+          {updShown.map(row)}
+          {upds.length > 8 && !allUpd && (
+            <button className="small muted mt1" onClick={function () { setAllUpd(true); }}>▼ 残り{upds.length - 8}件も表示</button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============ 相手待ちカード ============
+function WaitCard({ t, onEdit, onPatch, toggleDone }) {
+  const ctx = React.useContext(AppCtx);
+  const parent = t.parentId ? ctx.tasks.find(function (x) { return x.id === t.parentId; }) : null;
+  const wd = waitDays(t);
+  const due = t.remindAt ? daysUntil(t.remindAt) : null;
+  const hot = due !== null && due <= 0;
+  return (
+    <div className="card" style={{ padding: "10px 12px", borderLeft: "4px solid " + (hot ? "var(--accent)" : "#8A5AB2"), background: hot ? "#FFF6F4" : "#fff" }}>
+      {parent && <div className="small muted" style={{ marginBottom: "2px" }}>🏔 {parent.title} のステップ</div>}
+      <div style={{ fontSize: "13px", fontWeight: 500, cursor: "pointer", wordBreak: "break-word" }} onClick={function () { onEdit(t); }}>{t.title}</div>
+      <div className="wrap mt1">
+        <span className="chip bold" style={{ background: "#F1EAF6", color: "#6B4E8A" }}>⏳ {t.waitFor ? t.waitFor + "待ち" : "相手待ち"}{wd !== null ? "・" + (wd <= 0 ? "今日から" : wd + "日目") : ""}</span>
+        {t.remindAt && <span className="chip bold" style={hot ? { background: "#FBE3DF", color: "var(--accent)" } : { background: "var(--bg)", color: "var(--ink-soft)" }}>📣 {hot ? "催促どき(" + fmtDate(t.remindAt) + ")" : fmtDate(t.remindAt) + " に催促"}</span>}
+        {t.due && <span className="chip" style={{ background: dueInfo(t.due, "open").bg, color: dueInfo(t.due, "open").fg }}>期限 {dueInfo(t.due, "open").label}</span>}
+      </div>
+      <div className="row mt2">
+        <button className="btn btn-ghost btn-sm flex1" onClick={function () { onPatch(t.id, { waiting: false, waitSince: "", remindAt: "" }, "自分ボールに戻しました"); }}>📥 戻ってきた</button>
+        <button className="btn btn-ghost btn-sm flex1" onClick={function () { onPatch(t.id, { remindAt: plusDaysStr(3) }, "催促済み。次は " + fmtDate(plusDaysStr(3)) + " に確認します"); }}>📣 催促した(+3日)</button>
+        <button className="btn btn-ghost btn-sm" onClick={function () { toggleDone(t.id); }}>✓ 完了</button>
+      </div>
+    </div>
+  );
+}
+
+// ============ 待ちタブ ============
+function WaitTab({ data, toggleDone, onEdit, onPatch, onNewWait }) {
+  const [who, setWho] = useState("all");
+  const NONAME = "(相手未記入)";
+  const list = data.tasks.filter(isWaiting);
+  const people = {};
+  list.forEach(function (t) { const k = t.waitFor || NONAME; people[k] = (people[k] || 0) + 1; });
+  const names = Object.keys(people).sort(function (a, b) { return people[b] - people[a]; });
+  const byRemind = function (a, b) {
+    const ra = a.remindAt || "9999-99-99", rb = b.remindAt || "9999-99-99";
+    return ra < rb ? -1 : ra > rb ? 1 : 0;
+  };
+  const shown = list.filter(function (t) { return who === "all" || (t.waitFor || NONAME) === who; }).sort(byRemind);
+  const hot = shown.filter(function (t) { return t.remindAt && daysUntil(t.remindAt) <= 0; });
+  const calm = shown.filter(function (t) { return !(t.remindAt && daysUntil(t.remindAt) <= 0); });
+  const chipStyle = function (on) {
+    return on ? { background: "#8A5AB2", color: "#fff", padding: "5px 12px" } : { background: "#fff", color: "#6B4E8A", border: "1px solid #E6DAF0", padding: "5px 12px" };
+  };
+
+  return (
+    <div>
+      <div className="card mb3" style={{ background: "#FBF8FD" }}>
+        <div className="bold" style={{ fontSize: "14px", color: "#6B4E8A" }}>⏳ 相手待ち</div>
+        <div className="small muted mt1" style={{ lineHeight: 1.7 }}>
+          ボールが相手にあるタスク。催促日になると上の「📣 催促どき」に上がってきます。<br />
+          返事が来たら「📥 戻ってきた」で、自分のタスクに戻ります。
+        </div>
+        <div className="row mt3" style={{ justifyContent: "space-between" }}>
+          <button className="btn btn-sm" style={{ background: "#8A5AB2", color: "#fff" }} onClick={onNewWait}>＋ 相手待ちを追加</button>
+          <span className="small muted">合計 {list.length}件</span>
+        </div>
+      </div>
+
+      {names.length > 1 && (
+        <div className="wrap mb3">
+          <button className="chip bold" style={chipStyle(who === "all")} onClick={function () { setWho("all"); }}>全員 {list.length}</button>
+          {names.map(function (n) {
+            return <button key={n} className="chip bold" style={chipStyle(who === n)} onClick={function () { setWho(n); }}>{n} {people[n]}</button>;
+          })}
+        </div>
+      )}
+
+      {list.length === 0 && (
+        <div className="center muted xs" style={{ padding: "32px 0", lineHeight: 1.8 }}>
+          相手待ちのタスクはありません。<br />タスクの編集画面で「⏳ 相手待ち」にすると、ここに集まります。
+        </div>
+      )}
+
+      {hot.length > 0 && (
+        <div className="mb4">
+          <div className="label mb2" style={{ color: "var(--accent)" }}>📣 催促どき({hot.length}件)</div>
+          <div className="stack">
+            {hot.map(function (t) { return <WaitCard key={t.id} t={t} onEdit={onEdit} onPatch={onPatch} toggleDone={toggleDone} />; })}
+          </div>
+        </div>
+      )}
+      {calm.length > 0 && (
+        <div>
+          <div className="label mb2" style={{ color: "#6B4E8A" }}>⏳ 返事待ち({calm.length}件)</div>
+          <div className="stack">
+            {calm.map(function (t) { return <WaitCard key={t.id} t={t} onEdit={onEdit} onPatch={onPatch} toggleDone={toggleDone} />; })}
+          </div>
         </div>
       )}
     </div>
@@ -1366,7 +1725,7 @@ function TaskCard({ t, allTags, toggleDone, onEdit, onSchedule }) {
   const ctx = React.useContext(AppCtx);
   const d = dueInfo(t.due, t.status);
   const done = t.status === "done";
-  const fr = ctx.fresh ? ctx.fresh[t.id] : null;
+  const fr = ctx.fresh && ctx.fresh[t.id] === "new" ? "new" : null;
   const parent = t.parentId ? ctx.tasks.find(function (x) { return x.id === t.parentId; }) : null;
   const steps = !t.parentId ? ctx.tasks.filter(function (x) { return x.parentId === t.id; }) : [];
   const stepsDone = steps.filter(function (x) { return x.status === "done"; }).length;
@@ -1639,8 +1998,13 @@ function TaskModal({ task, members, allTags, allTasks, impGuide, onSaveGuide, on
 // ============ いつやる?モーダル ============
 function ScheduleModal({ task, onPlanned, showToast, cloudCfg, onClose }) {
   const [date, setDate] = useState((task.planned && task.planned.date) || todayStr());
-  const [start, setStart] = useState((task.planned && task.planned.start) || "10:00");
-  const [dur, setDur] = useState(60);
+  const init = task._init || null;
+  const [start, setStart] = useState((init && init.start) || (task.planned && task.planned.start) || "10:00");
+  const [dur, setDur] = useState(function () {
+    if (!init || !init.dur) return 60;
+    const opts = [15, 30, 60, 90, 120].filter(function (x) { return x <= init.dur; });
+    return opts.length ? opts[opts.length - 1] : 15;
+  });
   const [busy, setBusy] = useState(false);
   const connected = cloudCfg && cloudCfg.url;
 
@@ -1703,7 +2067,7 @@ function ScheduleModal({ task, onPlanned, showToast, cloudCfg, onClose }) {
 
         <label className="label">所要時間</label>
         <div className="row mb1">
-          {[30, 60, 90, 120].map(function (d) {
+          {[15, 30, 60, 90, 120].map(function (d) {
             return (
               <button key={d} className="btn btn-sm flex1" onClick={function () { setDur(d); }}
                 style={dur === d ? { background: "var(--ink)", color: "#fff" } : { background: "var(--bg)", color: "var(--gray)", border: "1px solid var(--line)" }}>
